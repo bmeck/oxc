@@ -1223,6 +1223,9 @@ impl<'a> Format<'a> for NullLiteral {
 impl<'a> Format<'a> for NumberLiteral<'a> {
     fn format(&self, p: &mut Prettier<'a>) -> Doc<'a> {
         wrap!(p, self, NumberLiteral, {
+            println!("{:?} ?", self);
+            if self.raw == "" {
+            }
             // See https://github.com/prettier/prettier/blob/main/src/utils/print-number.js
             // Perf: the regexes from prettier code above are ported to manual search for performance reasons.
             let raw = self.span.source_text(p.source_text);
@@ -1557,6 +1560,7 @@ impl<'a> Format<'a> for PropertyKey<'a> {
                         }
                     }
                     Expression::NumberLiteral(literal) => {
+                        println!("{:?} {:?}", need_quote, literal);
                         if need_quote {
                             Doc::Str(string::print_string(p, literal.raw, p.options.single_quote))
                         } else {

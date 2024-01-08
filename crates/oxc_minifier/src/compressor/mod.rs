@@ -36,11 +36,14 @@ impl<'a> Compressor<'a> {
     pub fn build(mut self, program: &mut Program<'a>) {
         self.prepass.build(program);
         self.visit_program(program);
+        println!("{:?}", program);
     }
 
     /* Utilities */
 
-    /// `1/0`
+    /**
+     * Represents Infinity reliably
+     */
     #[allow(unused)]
     fn create_one_div_zero(&mut self) -> Expression<'a> {
         let left = self.ast.number_literal(SPAN, 1.0, "1", NumberBase::Decimal);
@@ -49,6 +52,32 @@ impl<'a> Compressor<'a> {
         let right = self.ast.literal_number_expression(right);
         self.ast.binary_expression(SPAN, left, BinaryOperator::Division, right)
     }
+
+    /**
+     * Represents NegativeInfinity reliably
+     */
+    #[allow(unused)]
+    fn create_one_div_negative_zero(&mut self) -> Expression<'a> {
+        let left = self.ast.number_literal(SPAN, 1.0, "1", NumberBase::Decimal);
+        let left = self.ast.literal_number_expression(left);
+        let right = self.ast.number_literal(SPAN, 0.0, "0", NumberBase::Decimal);
+        let right = self.ast.literal_number_expression(right);
+        let right = self.ast.unary_expression(SPAN, UnaryOperator::UnaryNegation, right);
+        self.ast.binary_expression(SPAN, left, BinaryOperator::Division, right)
+    }
+
+    /**
+     * Represents NaN reliably
+     */
+    #[allow(unused)]
+    fn create_zero_div_zero(&mut self) -> Expression<'a> {
+        let left = self.ast.number_literal(SPAN, 0.0, "0", NumberBase::Decimal);
+        let left = self.ast.literal_number_expression(left);
+        let right = self.ast.number_literal(SPAN, 0.0, "0", NumberBase::Decimal);
+        let right = self.ast.literal_number_expression(right);
+        self.ast.binary_expression(SPAN, left, BinaryOperator::Division, right)
+    }
+
 
     /* Statements */
 
@@ -65,95 +94,6 @@ impl<'a> Compressor<'a> {
             }
         }
     }
-
-    /// Drop `drop_debugger` statement.
-    /// Enabled by `compress.drop_debugger`
-    fn drop_debugger(&mut self, stmt: &Statement<'a>) -> bool {
-        matches!(stmt, Statement::DebuggerStatement(_)) && self.options.drop_debugger
-    }
-
-    /// Drop `console.*` expressions.
-    /// Enabled by `compress.drop_console
-    fn drop_console(&mut self, stmt: &Statement<'a>) -> bool {
-        self.options.drop_console
-            && matches!(stmt, Statement::ExpressionStatement(expr) if util::is_console(&expr.expression))
-    }
-
-    fn compress_console(&mut self, expr: &mut Expression<'a>) -> bool {
-        if self.options.drop_console && util::is_console(expr) {
-            *expr = self.ast.void_0();
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Join consecutive var statements
-    fn join_vars(&mut self, stmts: &mut Vec<'a, Statement<'a>>) {
-        // Collect all the consecutive ranges that contain joinable vars.
-        // This is required because Rust prevents in-place vec mutation.
-        let mut ranges = vec![];
-        let mut range = 0..0;
-        let mut i = 1usize;
-        let mut capacity = 0usize;
-        for window in stmts.windows(2) {
-            let [prev, cur] = window else { unreachable!() };
-            if let (
-                Statement::Declaration(Declaration::VariableDeclaration(cur_decl)),
-                Statement::Declaration(Declaration::VariableDeclaration(prev_decl)),
-            ) = (cur, prev)
-            {
-                if cur_decl.kind == prev_decl.kind {
-                    if i - 1 != range.end {
-                        range.start = i - 1;
-                    }
-                    range.end = i + 1;
-                }
-            }
-            if (range.end != i || i == stmts.len() - 1) && range.start < range.end {
-                capacity += range.end - range.start - 1;
-                ranges.push(range.clone());
-                range = 0..0;
-            }
-            i += 1;
-        }
-
-        if ranges.is_empty() {
-            return;
-        }
-
-        // Reconstruct the stmts array by joining consecutive ranges
-        let mut new_stmts = self.ast.new_vec_with_capacity(stmts.len() - capacity);
-        for (i, stmt) in stmts.drain(..).enumerate() {
-            if i > 0 && ranges.iter().any(|range| range.contains(&(i - 1)) && range.contains(&i)) {
-                if let Statement::Declaration(Declaration::VariableDeclaration(prev_decl)) =
-                    new_stmts.last_mut().unwrap()
-                {
-                    if let Statement::Declaration(Declaration::VariableDeclaration(mut cur_decl)) =
-                        stmt
-                    {
-                        prev_decl.declarations.append(&mut cur_decl.declarations);
-                    }
-                }
-            } else {
-                new_stmts.push(stmt);
-            }
-        }
-        *stmts = new_stmts;
-    }
-
-    /// Transforms `while(expr)` to `for(;expr;)`
-    fn compress_while(&mut self, stmt: &mut Statement<'a>) {
-        let Statement::WhileStatement(while_stmt) = stmt else { return };
-        if self.options.loops {
-            let dummy_test = self.ast.this_expression(SPAN);
-            let test = std::mem::replace(&mut while_stmt.test, dummy_test);
-            let body = self.ast.move_statement(&mut while_stmt.body);
-            *stmt = self.ast.for_statement(SPAN, None, Some(test), None, body);
-        }
-    }
-
-    /* Expressions */
 
     /// Transforms `undefined` => `void 0`
     fn compress_undefined(&self, expr: &mut Expression<'a>) -> bool {
@@ -218,65 +158,13 @@ impl<'a> Compressor<'a> {
             }
         }
     }
-
-    /// Removes redundant argument of `ReturnStatement`
-    ///
-    /// `return undefined` -> `return`
-    /// `return void 0` -> `return`
-    fn compress_return_statement(&mut self, stmt: &mut ReturnStatement<'a>) {
-        if stmt.argument.as_ref().is_some_and(|expr| expr.is_undefined() || expr.is_void_0()) {
-            stmt.argument = None;
-        }
-    }
-
-    fn compress_variable_declarator(&mut self, decl: &mut VariableDeclarator<'a>) {
-        if decl.kind.is_const() {
-            return;
-        }
-        if decl.init.as_ref().is_some_and(|init| init.is_undefined() || init.is_void_0()) {
-            decl.init = None;
-        }
-    }
-
-    /// [Peephole Reorder Constant Expression](https://github.com/google/closure-compiler/blob/master/src/com/google/javascript/jscomp/PeepholeReorderConstantExpression.java)
-    ///
-    /// Reorder constant expression hoping for a better compression.
-    /// ex. x === 0 -> 0 === x
-    /// After reordering, expressions like 0 === x and 0 === y may have higher
-    /// compression together than their original counterparts.
-    #[allow(unused)]
-    fn reorder_constant_expression(&self, expr: &mut BinaryExpression<'a>) {
-        let operator = expr.operator;
-        if operator.is_equality()
-            || operator.is_compare()
-            || operator == BinaryOperator::Multiplication
-        {
-            if expr.precedence() == expr.left.precedence() {
-                return;
-            }
-            if !expr.left.is_immutable_value() && expr.right.is_immutable_value() {
-                if let Some(inverse_operator) = operator.compare_inverse_operator() {
-                    expr.operator = inverse_operator;
-                }
-                std::mem::swap(&mut expr.left, &mut expr.right);
-            }
-        }
-    }
 }
 
 impl<'a> VisitMut<'a> for Compressor<'a> {
     fn visit_statements(&mut self, stmts: &mut Vec<'a, Statement<'a>>) {
         stmts.retain(|stmt| {
-            if self.drop_debugger(stmt) {
-                return false;
-            }
-            if self.drop_console(stmt) {
-                return false;
-            }
             true
         });
-
-        self.join_vars(stmts);
 
         for stmt in stmts.iter_mut() {
             self.visit_statement(stmt);
@@ -285,8 +173,7 @@ impl<'a> VisitMut<'a> for Compressor<'a> {
 
     fn visit_statement(&mut self, stmt: &mut Statement<'a>) {
         self.compress_block(stmt);
-        self.compress_while(stmt);
-        self.fold_condition(stmt);
+        // self.fold_condition(stmt);
         self.visit_statement_match(stmt);
     }
 
@@ -294,20 +181,16 @@ impl<'a> VisitMut<'a> for Compressor<'a> {
         if let Some(arg) = &mut stmt.argument {
             self.visit_expression(arg);
         }
-        // We may fold `void 1` to `void 0`, so compress it after visiting
-        self.compress_return_statement(stmt);
     }
 
     fn visit_variable_declaration(&mut self, decl: &mut VariableDeclaration<'a>) {
         for declarator in decl.declarations.iter_mut() {
             self.visit_variable_declarator(declarator);
-            self.compress_variable_declarator(declarator);
         }
     }
 
     fn visit_expression(&mut self, expr: &mut Expression<'a>) {
         self.visit_expression_match(expr);
-        self.compress_console(expr);
         self.fold_expression(expr);
         if !self.compress_undefined(expr) {
             self.compress_boolean(expr);

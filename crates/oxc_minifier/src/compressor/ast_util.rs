@@ -279,6 +279,17 @@ impl TryFrom<NumberValue> for f64 {
         }
     }
 }
+impl TryFrom<&NumberValue> for f64 {
+    type Error = ();
+    fn try_from(value: &NumberValue) -> Result<Self, Self::Error> {
+        match value {
+            NumberValue::Number(num) => Ok(*num),
+            NumberValue::PositiveInfinity => Ok(Self::INFINITY),
+            NumberValue::NegativeInfinity => Ok(Self::NEG_INFINITY),
+            NumberValue::NaN => Err(()),
+        }
+    }
+}
 
 pub fn is_exact_int64(num: f64) -> bool {
     num.fract() == 0.0
