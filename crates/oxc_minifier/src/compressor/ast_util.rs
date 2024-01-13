@@ -122,6 +122,17 @@ impl<'a, 'b> CheckForStateChange<'a, 'b> for Expression<'a> {
             Self::UnaryExpression(unary_expr) => {
                 unary_expr.check_for_state_change(check_for_new_objects)
             }
+            Self::ParenthesizedExpression(p) => {
+                p.expression.check_for_state_change(check_for_new_objects)
+            }
+            Self::SequenceExpression(s) => {
+                for x in &s.expressions {
+                    if x.check_for_state_change(check_for_new_objects) {
+                        return true
+                    }
+                }
+                false
+            }
             Self::BinaryExpression(binary_expr) => {
                 binary_expr.check_for_state_change(check_for_new_objects)
             }

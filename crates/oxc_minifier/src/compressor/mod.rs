@@ -17,7 +17,7 @@ use oxc_syntax::{
 };
 
 pub use self::options::CompressOptions;
-use self::prepass::Prepass;
+use self::{prepass::Prepass, ast_util::MayHaveSideEffects};
 
 pub struct Compressor<'a> {
     ast: AstBuilder<'a>,
@@ -125,6 +125,7 @@ impl<'a> Compressor<'a> {
     /// Transforms boolean expression `true` => `!0` `false` => `!1`
     /// Enabled by `compress.booleans`
     fn compress_boolean(&mut self, expr: &mut Expression<'a>) -> bool {
+        return false;
         let Expression::BooleanLiteral(lit) = expr else { return false };
         if self.options.booleans {
             let num = self.ast.number_literal(
@@ -155,6 +156,104 @@ impl<'a> Compressor<'a> {
                         }
                     }
                 }
+            }
+        };
+    }
+
+    /// Removes extra = from already coerced comparisons
+    /// Transforms `typeof foo === "undefined"` into `typeof foo == "undefined`
+    /// Enabled by `compress.typeofs`
+    fn compress_overly_strict(&self, expr: &mut Expression<'a>) {
+        if let Expression::BinaryExpression(bi) = expr {
+            match bi.operator {
+                BinaryOperator::StrictEquality => {
+                    let maybe_left_type = bi.left.evaluate_to_specific_primitive_type();
+                    let maybe_right_type = bi.right.evaluate_to_specific_primitive_type();
+                    // no side effects, can replace potentially with a literal
+                    match (maybe_left_type, maybe_right_type) {
+                        (Some(left_type), Some(right_type)) => {
+                            let comp = left_type.compare(&right_type);
+                            println!("{:?} {:?} {:?}", left_type, right_type, comp);
+                            match comp {
+                                PrimitiveTypeComparison::Unknown => {
+                                    return
+                                },
+                                PrimitiveTypeComparison::AlwaysSameType => {
+                                    bi.operator = BinaryOperator::Equality;
+                                    return
+                                },
+                                PrimitiveTypeComparison::AlwaysSameTypeAndValue => {
+                                    if !bi.left.may_have_side_effects() && !bi.right.may_have_side_effects() {
+                                        *expr = self.ast.literal_boolean_expression(self.ast.boolean_literal(bi.span, true));
+                                    } else {
+                                        bi.operator = BinaryOperator::Equality
+                                    }
+                                },
+                                PrimitiveTypeComparison::AlwaysSameTypeNeverSameValue => {
+                                    if !bi.left.may_have_side_effects() && !bi.right.may_have_side_effects() {
+                                        *expr = self.ast.literal_boolean_expression(self.ast.boolean_literal(bi.span, false));
+                                    } else {
+                                        bi.operator = BinaryOperator::Equality
+                                    }
+                                }
+                                PrimitiveTypeComparison::NeverSameType => {
+                                    if !bi.left.may_have_side_effects() && !bi.right.may_have_side_effects() {
+                                        *expr = self.ast.literal_boolean_expression(self.ast.boolean_literal(bi.span, false));
+                                    } else {
+                                        bi.operator = BinaryOperator::Equality
+                                    }
+                                }
+                            }
+                            
+                        },
+                        (_, _) => {}
+                    }
+                }
+                _ => {}
+            };
+        }
+    }
+
+    /// Removes redundant argument of `ReturnStatement`
+    ///
+    /// `return undefined` -> `return`
+    /// `return void 0` -> `return`
+    fn compress_return_statement(&mut self, stmt: &mut ReturnStatement<'a>) {
+        if stmt.argument.as_ref().is_some_and(|expr| expr.is_undefined() || expr.is_void_0()) {
+            stmt.argument = None;
+        }
+    }
+
+    fn compress_variable_declarator(&mut self, decl: &mut VariableDeclarator<'a>) {
+        if decl.kind.is_const() {
+            return;
+        }
+        if decl.init.as_ref().is_some_and(|init| init.is_undefined() || init.is_void_0()) {
+            decl.init = None;
+        }
+    }
+
+    /// [Peephole Reorder Constant Expression](https://github.com/google/closure-compiler/blob/master/src/com/google/javascript/jscomp/PeepholeReorderConstantExpression.java)
+    ///
+    /// Reorder constant expression hoping for a better compression.
+    /// ex. x === 0 -> 0 === x
+    /// After reordering, expressions like 0 === x and 0 === y may have higher
+    /// compression together than their original counterparts.
+    #[allow(unused)]
+    fn reorder_constant_expression(&self, expr: &mut BinaryExpression<'a>) {
+        let operator = expr.operator;
+        if operator.is_equality()
+            || operator.is_compare()
+            || operator == BinaryOperator::Multiplication
+        {
+            if expr.precedence() == expr.left.precedence() {
+                return;
+            }
+            if !expr.left.is_immutable_value() && expr.right.is_immutable_value() {
+                if let Some(inverse_operator) = operator.compare_inverse_operator() {
+                    expr.operator = inverse_operator;
+                }
+                std::mem::swap(&mut expr.left, &mut expr.right);
             }
         }
     }
@@ -192,6 +291,7 @@ impl<'a> VisitMut<'a> for Compressor<'a> {
     fn visit_expression(&mut self, expr: &mut Expression<'a>) {
         self.visit_expression_match(expr);
         self.fold_expression(expr);
+        self.compress_overly_strict(expr);
         if !self.compress_undefined(expr) {
             self.compress_boolean(expr);
         }
