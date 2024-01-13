@@ -1224,8 +1224,7 @@ impl<'a> Format<'a> for NumberLiteral<'a> {
     fn format(&self, p: &mut Prettier<'a>) -> Doc<'a> {
         wrap!(p, self, NumberLiteral, {
             println!("{:?} ?", self);
-            if self.raw == "" {
-            }
+            if self.raw == "" {}
             // See https://github.com/prettier/prettier/blob/main/src/utils/print-number.js
             // Perf: the regexes from prettier code above are ported to manual search for performance reasons.
             let raw = self.span.source_text(p.source_text);

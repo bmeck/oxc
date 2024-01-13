@@ -2,7 +2,11 @@
 //!
 //! <https://github.com/google/closure-compiler/blob/master/src/com/google/javascript/jscomp/PeepholeFoldConstants.java>
 
-use std::{cmp::Ordering, mem, ops::Not, borrow::{Borrow, Cow}, backtrace::Backtrace};
+use std::{
+    cmp::Ordering,
+    mem,
+    ops::Not,
+};
 
 use num_bigint::BigInt;
 #[allow(clippy::wildcard_imports)]
@@ -204,7 +208,6 @@ impl<'a> Compressor<'a> {
         left: &'b Expression<'a>,
         right: &'b Expression<'a>,
     ) -> Option<Expression<'a>> {
-        return None;
         // skip any potentially dangerous compressions
         if left.may_have_side_effects() || right.may_have_side_effects() {
             return None;
@@ -251,7 +254,6 @@ impl<'a> Compressor<'a> {
         left: &'b Expression<'a>,
         right: &'b Expression<'a>,
     ) -> Option<Expression<'a>> {
-        return None;
         let value = match self.evaluate_comparison(op, left, right) {
             Tri::True => true,
             Tri::False => false,

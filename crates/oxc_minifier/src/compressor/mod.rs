@@ -17,7 +17,7 @@ use oxc_syntax::{
 };
 
 pub use self::options::CompressOptions;
-use self::{prepass::Prepass, ast_util::MayHaveSideEffects};
+use self::{ast_util::MayHaveSideEffects, prepass::Prepass};
 
 pub struct Compressor<'a> {
     ast: AstBuilder<'a>,
@@ -78,7 +78,6 @@ impl<'a> Compressor<'a> {
         self.ast.binary_expression(SPAN, left, BinaryOperator::Division, right)
     }
 
-
     /* Statements */
 
     /// Remove block from single line blocks
@@ -125,7 +124,6 @@ impl<'a> Compressor<'a> {
     /// Transforms boolean expression `true` => `!0` `false` => `!1`
     /// Enabled by `compress.booleans`
     fn compress_boolean(&mut self, expr: &mut Expression<'a>) -> bool {
-        return false;
         let Expression::BooleanLiteral(lit) = expr else { return false };
         if self.options.booleans {
             let num = self.ast.number_literal(
@@ -175,37 +173,34 @@ impl<'a> Compressor<'a> {
                             let comp = left_type.compare(&right_type);
                             println!("{:?} {:?} {:?}", left_type, right_type, comp);
                             match comp {
-                                PrimitiveTypeComparison::Unknown => {
-                                    return
-                                },
+                                PrimitiveTypeComparison::Unknown => (),
                                 PrimitiveTypeComparison::AlwaysSameType => {
                                     bi.operator = BinaryOperator::Equality;
-                                    return
-                                },
+                                }
                                 PrimitiveTypeComparison::AlwaysSameTypeAndValue => {
-                                    if !bi.left.may_have_side_effects() && !bi.right.may_have_side_effects() {
-                                        *expr = self.ast.literal_boolean_expression(self.ast.boolean_literal(bi.span, true));
+                                    if !bi.left.may_have_side_effects()
+                                        && !bi.right.may_have_side_effects()
+                                    {
+                                        *expr = self.ast.literal_boolean_expression(
+                                            self.ast.boolean_literal(bi.span, true),
+                                        );
                                     } else {
-                                        bi.operator = BinaryOperator::Equality
-                                    }
-                                },
-                                PrimitiveTypeComparison::AlwaysSameTypeNeverSameValue => {
-                                    if !bi.left.may_have_side_effects() && !bi.right.may_have_side_effects() {
-                                        *expr = self.ast.literal_boolean_expression(self.ast.boolean_literal(bi.span, false));
-                                    } else {
-                                        bi.operator = BinaryOperator::Equality
+                                        bi.operator = BinaryOperator::Equality;
                                     }
                                 }
-                                PrimitiveTypeComparison::NeverSameType => {
-                                    if !bi.left.may_have_side_effects() && !bi.right.may_have_side_effects() {
-                                        *expr = self.ast.literal_boolean_expression(self.ast.boolean_literal(bi.span, false));
+                                PrimitiveTypeComparison::NeverSameType | PrimitiveTypeComparison::AlwaysSameTypeNeverSameValue => {
+                                    if !bi.left.may_have_side_effects()
+                                        && !bi.right.may_have_side_effects()
+                                    {
+                                        *expr = self.ast.literal_boolean_expression(
+                                            self.ast.boolean_literal(bi.span, false),
+                                        );
                                     } else {
-                                        bi.operator = BinaryOperator::Equality
+                                        bi.operator = BinaryOperator::Equality;
                                     }
                                 }
                             }
-                            
-                        },
+                        }
                         (_, _) => {}
                     }
                 }
@@ -261,9 +256,7 @@ impl<'a> Compressor<'a> {
 
 impl<'a> VisitMut<'a> for Compressor<'a> {
     fn visit_statements(&mut self, stmts: &mut Vec<'a, Statement<'a>>) {
-        stmts.retain(|stmt| {
-            true
-        });
+        stmts.retain(|stmt| true);
 
         for stmt in stmts.iter_mut() {
             self.visit_statement(stmt);

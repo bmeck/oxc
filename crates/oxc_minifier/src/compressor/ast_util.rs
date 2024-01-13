@@ -128,7 +128,7 @@ impl<'a, 'b> CheckForStateChange<'a, 'b> for Expression<'a> {
             Self::SequenceExpression(s) => {
                 for x in &s.expressions {
                     if x.check_for_state_change(check_for_new_objects) {
-                        return true
+                        return true;
                     }
                 }
                 false
@@ -284,17 +284,6 @@ impl TryFrom<NumberValue> for f64 {
     fn try_from(value: NumberValue) -> Result<Self, Self::Error> {
         match value {
             NumberValue::Number(num) => Ok(num),
-            NumberValue::PositiveInfinity => Ok(Self::INFINITY),
-            NumberValue::NegativeInfinity => Ok(Self::NEG_INFINITY),
-            NumberValue::NaN => Err(()),
-        }
-    }
-}
-impl TryFrom<&NumberValue> for f64 {
-    type Error = ();
-    fn try_from(value: &NumberValue) -> Result<Self, Self::Error> {
-        match value {
-            NumberValue::Number(num) => Ok(*num),
             NumberValue::PositiveInfinity => Ok(Self::INFINITY),
             NumberValue::NegativeInfinity => Ok(Self::NEG_INFINITY),
             NumberValue::NaN => Err(()),
