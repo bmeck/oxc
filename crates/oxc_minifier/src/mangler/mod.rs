@@ -2,7 +2,7 @@ use itertools::Itertools;
 #[allow(clippy::wildcard_imports)]
 use oxc_ast::ast::*;
 use oxc_index::{index_vec, IndexVec};
-use oxc_semantic::{ReferenceId, SemanticBuilder, SymbolId, SymbolTable};
+use oxc_semantic::{ReferenceId, SemanticBuilder, SymbolId, SymbolTable, Semantic };
 use oxc_span::Atom;
 
 type Slot = usize;

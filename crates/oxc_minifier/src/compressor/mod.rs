@@ -93,6 +93,95 @@ impl<'a> Compressor<'a> {
             }
         }
     }
+    
+    /// Drop `drop_debugger` statement.
+    /// Enabled by `compress.drop_debugger`
+    fn drop_debugger(&mut self, stmt: &Statement<'a>) -> bool {
+        matches!(stmt, Statement::DebuggerStatement(_)) && self.options.drop_debugger
+    }
+
+    /// Drop `console.*` expressions.
+    /// Enabled by `compress.drop_console
+    fn drop_console(&mut self, stmt: &Statement<'a>) -> bool {
+        self.options.drop_console
+            && matches!(stmt, Statement::ExpressionStatement(expr) if util::is_console(&expr.expression))
+    }
+
+    fn compress_console(&mut self, expr: &mut Expression<'a>) -> bool {
+        if self.options.drop_console && util::is_console(expr) {
+            *expr = self.ast.void_0();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Join consecutive var statements
+    fn join_vars(&mut self, stmts: &mut Vec<'a, Statement<'a>>) {
+        // Collect all the consecutive ranges that contain joinable vars.
+        // This is required because Rust prevents in-place vec mutation.
+        let mut ranges = vec![];
+        let mut range = 0..0;
+        let mut i = 1usize;
+        let mut capacity = 0usize;
+        for window in stmts.windows(2) {
+            let [prev, cur] = window else { unreachable!() };
+            if let (
+                Statement::Declaration(Declaration::VariableDeclaration(cur_decl)),
+                Statement::Declaration(Declaration::VariableDeclaration(prev_decl)),
+            ) = (cur, prev)
+            {
+                if cur_decl.kind == prev_decl.kind {
+                    if i - 1 != range.end {
+                        range.start = i - 1;
+                    }
+                    range.end = i + 1;
+                }
+            }
+            if (range.end != i || i == stmts.len() - 1) && range.start < range.end {
+                capacity += range.end - range.start - 1;
+                ranges.push(range.clone());
+                range = 0..0;
+            }
+            i += 1;
+        }
+
+        if ranges.is_empty() {
+            return;
+        }
+
+        // Reconstruct the stmts array by joining consecutive ranges
+        let mut new_stmts = self.ast.new_vec_with_capacity(stmts.len() - capacity);
+        for (i, stmt) in stmts.drain(..).enumerate() {
+            if i > 0 && ranges.iter().any(|range| range.contains(&(i - 1)) && range.contains(&i)) {
+                if let Statement::Declaration(Declaration::VariableDeclaration(prev_decl)) =
+                    new_stmts.last_mut().unwrap()
+                {
+                    if let Statement::Declaration(Declaration::VariableDeclaration(mut cur_decl)) =
+                        stmt
+                    {
+                        prev_decl.declarations.append(&mut cur_decl.declarations);
+                    }
+                }
+            } else {
+                new_stmts.push(stmt);
+            }
+        }
+        *stmts = new_stmts;
+    }
+
+    /// Transforms `while(expr)` to `for(;expr;)`
+    fn compress_while(&mut self, stmt: &mut Statement<'a>) {
+        let Statement::WhileStatement(while_stmt) = stmt else { return };
+        if self.options.loops {
+            let dummy_test = self.ast.this_expression(SPAN);
+            let test = std::mem::replace(&mut while_stmt.test, dummy_test);
+            let body = self.ast.move_statement(&mut while_stmt.body);
+            *stmt = self.ast.for_statement(SPAN, None, Some(test), None, body);
+        }
+    }
+
+    /* Expressions */
 
     /// Transforms `undefined` => `void 0`
     fn compress_undefined(&self, expr: &mut Expression<'a>) -> bool {
@@ -248,8 +337,18 @@ impl<'a> Compressor<'a> {
 }
 
 impl<'a> VisitMut<'a> for Compressor<'a> {
-    fn visit_statements(&mut self, stmts: &mut Vec<'a, Statement<'a>>) {
-        stmts.retain(|stmt| true);
+    fn visit_statements(&mut self, stmts: &mut Vec<'a, Statement<'a>>) {        stmts.retain(|stmt| {
+        stmts.retain(|stmt| {
+            if self.drop_debugger(stmt) {
+                return false;
+            }
+            if self.drop_console(stmt) {
+                return false;
+            }
+            true
+        });
+
+        self.join_vars(stmts);
 
         for stmt in stmts.iter_mut() {
             self.visit_statement(stmt);
@@ -258,7 +357,8 @@ impl<'a> VisitMut<'a> for Compressor<'a> {
 
     fn visit_statement(&mut self, stmt: &mut Statement<'a>) {
         self.compress_block(stmt);
-        // self.fold_condition(stmt);
+        self.compress_while(stmt);
+        self.fold_condition(stmt);
         self.visit_statement_match(stmt);
     }
 
@@ -271,11 +371,13 @@ impl<'a> VisitMut<'a> for Compressor<'a> {
     fn visit_variable_declaration(&mut self, decl: &mut VariableDeclaration<'a>) {
         for declarator in decl.declarations.iter_mut() {
             self.visit_variable_declarator(declarator);
+            self.compress_variable_declarator(declarator);
         }
     }
 
     fn visit_expression(&mut self, expr: &mut Expression<'a>) {
         self.visit_expression_match(expr);
+        self.compress_console(expr);
         self.fold_expression(expr);
         self.compress_overly_strict(expr);
         if !self.compress_undefined(expr) {

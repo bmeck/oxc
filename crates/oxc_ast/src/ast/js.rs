@@ -449,8 +449,17 @@ impl<'a> Expression<'a> {
                             _ => None,
                         }
                     }
-                    BinaryOperator::Subtraction
-                    | BinaryOperator::Multiplication
+                    BinaryOperator::Subtraction => {
+                        let left_type = bi.left.evaluate_to_specific_primitive_type().map(|arg| arg.narrow_as_number_type());
+                        let right_type = bi.right.evaluate_to_specific_primitive_type().map(|arg| arg.narrow_as_number_type());
+                        println!("{left_type:?} {right_type:?}");
+                        if let (Some(PrimitiveType::Number(NumberConstraint::Value(left))), Some(PrimitiveType::Number(NumberConstraint::Value(right)))) = (left_type, right_type) {
+                            Some(PrimitiveType::Number(NumberConstraint::Value(left - right)))
+                        } else {
+                            None
+                        }
+                    }
+                    BinaryOperator::Multiplication
                     | BinaryOperator::Division
                     | BinaryOperator::ShiftLeft
                     | BinaryOperator::ShiftRight
