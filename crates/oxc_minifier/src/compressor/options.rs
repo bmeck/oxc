@@ -34,6 +34,9 @@ pub struct CompressOptions {
     ///
     /// Default `true`
     pub typeofs: bool,
+
+    // Uses a 2nd pass type based approach to compress values
+    pub types: bool,
 }
 
 impl Default for CompressOptions {
@@ -46,6 +49,7 @@ impl Default for CompressOptions {
             join_vars: true,
             loops: true,
             typeofs: true,
+            types: false,
         }
     }
 }
@@ -60,6 +64,7 @@ impl CompressOptions {
             join_vars: true,
             loops: true,
             typeofs: true,
+            types: true,
         }
     }
 
@@ -72,6 +77,7 @@ impl CompressOptions {
             join_vars: false,
             loops: false,
             typeofs: false,
+            types: false,
         }
     }
 }

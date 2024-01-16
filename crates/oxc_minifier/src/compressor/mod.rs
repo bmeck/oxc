@@ -380,8 +380,8 @@ impl<'a> VisitMut<'a> for Compressor<'a> {
     fn visit_expression(&mut self, expr: &mut Expression<'a>) {
         self.visit_expression_match(expr);
         self.compress_console(expr);
-        self.fold_expression(expr);
         self.compress_overly_strict(expr);
+        self.fold_expression(expr);
         if !self.compress_undefined(expr) {
             self.compress_boolean(expr);
         }

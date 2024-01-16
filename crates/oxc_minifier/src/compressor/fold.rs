@@ -5,12 +5,13 @@
 use std::{cmp::Ordering, mem, ops::Not};
 
 use num_bigint::BigInt;
+use num_traits::Signed;
 #[allow(clippy::wildcard_imports)]
 use oxc_ast::ast::*;
 use oxc_span::{Atom, GetSpan, Span};
 use oxc_syntax::{
     operator::{BinaryOperator, LogicalOperator, UnaryOperator},
-    NumberBase,
+    BigintBase, NumberBase,
 };
 
 use super::ast_util::{
@@ -237,6 +238,106 @@ impl<'a> Compressor<'a> {
         };
         if let Some(folded_expr) = folded_expr {
             *expr = folded_expr;
+        }
+        if self.options.types {
+            let t = expr.evaluate_to_specific_primitive_type();
+            let span = expr.span();
+            match t {
+                Some(PrimitiveType::Null) => {
+                    *expr = self.ast.literal_null_expression(NullLiteral { span })
+                }
+                Some(PrimitiveType::Undefined) => {
+                    *expr = self.ast.unary_expression(
+                        span,
+                        UnaryOperator::Void,
+                        self.ast.literal_number_expression(self.ast.number_literal(
+                            span,
+                            0.0,
+                            "0",
+                            NumberBase::Decimal,
+                        )),
+                    )
+                }
+                Some(PrimitiveType::Number(NumberConstraint::Value(v))) => {
+                    if v.is_infinite() {
+                        let numerator: f64;
+                        let numerator_raw: &str;
+                        if v.is_sign_positive() {
+                            numerator = 1.0;
+                            numerator_raw = "1";
+                        } else {
+                            numerator = -1.0;
+                            numerator_raw = "-1";
+                        };
+                        *expr = self.ast.binary_expression(
+                            span,
+                            self.ast.literal_number_expression(self.ast.number_literal(
+                                span,
+                                numerator,
+                                numerator_raw,
+                                NumberBase::Decimal,
+                            )),
+                            BinaryOperator::Division,
+                            self.ast.literal_number_expression(self.ast.number_literal(
+                                span,
+                                v,
+                                numerator_raw,
+                                NumberBase::Decimal,
+                            )),
+                        )
+                    } else if v.is_nan() {
+                        *expr = self.ast.binary_expression(
+                            span,
+                            self.ast.literal_number_expression(self.ast.number_literal(
+                                span,
+                                v,
+                                "0",
+                                NumberBase::Decimal,
+                            )),
+                            BinaryOperator::Division,
+                            self.ast.literal_number_expression(self.ast.number_literal(
+                                span,
+                                v,
+                                "0",
+                                NumberBase::Decimal,
+                            )),
+                        )
+                    } else {
+                        *expr = self.ast.literal_number_expression(self.ast.number_literal(
+                            span,
+                            v,
+                            "",
+                            NumberBase::Decimal,
+                        ))
+                    }
+                }
+                Some(PrimitiveType::Undefined) => {
+                    *expr = self.ast.unary_expression(
+                        span,
+                        UnaryOperator::Void,
+                        self.ast.literal_number_expression(self.ast.number_literal(
+                            span,
+                            0.0,
+                            "0",
+                            NumberBase::Decimal,
+                        )),
+                    )
+                }
+                Some(PrimitiveType::String(StringConstraint::Value(v))) => {
+                    *expr = self.ast.literal_string_expression(StringLiteral { span, value: v })
+                }
+                Some(PrimitiveType::Boolean(BooleanConstraint::Value(v))) => {
+                    *expr = self.ast.literal_boolean_expression(self.ast.boolean_literal(span, v))
+                }
+                Some(PrimitiveType::BigInt(BigIntConstraint::Value(v))) => {
+                    *expr = self.ast.literal_bigint_expression(self.ast.bigint_literal(
+                        span,
+                        v,
+                        BigintBase::Decimal,
+                    ))
+                }
+                _ => {}
+            }
         }
     }
 
