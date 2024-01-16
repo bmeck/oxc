@@ -2,11 +2,7 @@
 //!
 //! <https://github.com/google/closure-compiler/blob/master/src/com/google/javascript/jscomp/PeepholeFoldConstants.java>
 
-use std::{
-    cmp::Ordering,
-    mem,
-    ops::Not,
-};
+use std::{cmp::Ordering, mem, ops::Not};
 
 use num_bigint::BigInt;
 #[allow(clippy::wildcard_imports)]

@@ -163,48 +163,41 @@ impl<'a> Compressor<'a> {
     /// Enabled by `compress.typeofs`
     fn compress_overly_strict(&self, expr: &mut Expression<'a>) {
         if let Expression::BinaryExpression(bi) = expr {
-            match bi.operator {
-                BinaryOperator::StrictEquality => {
-                    let maybe_left_type = bi.left.evaluate_to_specific_primitive_type();
-                    let maybe_right_type = bi.right.evaluate_to_specific_primitive_type();
-                    // no side effects, can replace potentially with a literal
-                    match (maybe_left_type, maybe_right_type) {
-                        (Some(left_type), Some(right_type)) => {
-                            let comp = left_type.compare(&right_type);
-                            println!("{:?} {:?} {:?}", left_type, right_type, comp);
-                            match comp {
-                                PrimitiveTypeComparison::Unknown => (),
-                                PrimitiveTypeComparison::AlwaysSameType => {
-                                    bi.operator = BinaryOperator::Equality;
-                                }
-                                PrimitiveTypeComparison::AlwaysSameTypeAndValue => {
-                                    if !bi.left.may_have_side_effects()
-                                        && !bi.right.may_have_side_effects()
-                                    {
-                                        *expr = self.ast.literal_boolean_expression(
-                                            self.ast.boolean_literal(bi.span, true),
-                                        );
-                                    } else {
-                                        bi.operator = BinaryOperator::Equality;
-                                    }
-                                }
-                                PrimitiveTypeComparison::NeverSameType | PrimitiveTypeComparison::AlwaysSameTypeNeverSameValue => {
-                                    if !bi.left.may_have_side_effects()
-                                        && !bi.right.may_have_side_effects()
-                                    {
-                                        *expr = self.ast.literal_boolean_expression(
-                                            self.ast.boolean_literal(bi.span, false),
-                                        );
-                                    } else {
-                                        bi.operator = BinaryOperator::Equality;
-                                    }
-                                }
+            if bi.operator == BinaryOperator::StrictEquality {
+                let maybe_left_type = bi.left.evaluate_to_specific_primitive_type();
+                let maybe_right_type = bi.right.evaluate_to_specific_primitive_type();
+                // no side effects, can replace potentially with a literal
+                if let (Some(left_type), Some(right_type)) = (maybe_left_type, maybe_right_type) {
+                    let comp = left_type.compare(&right_type);
+                    println!("{:?} {:?} {:?}", left_type, right_type, comp);
+                    match comp {
+                        PrimitiveTypeComparison::Unknown => (),
+                        PrimitiveTypeComparison::AlwaysSameType => {
+                            bi.operator = BinaryOperator::Equality;
+                        }
+                        PrimitiveTypeComparison::AlwaysSameTypeAndValue => {
+                            if !bi.left.may_have_side_effects() && !bi.right.may_have_side_effects()
+                            {
+                                *expr = self.ast.literal_boolean_expression(
+                                    self.ast.boolean_literal(bi.span, true),
+                                );
+                            } else {
+                                bi.operator = BinaryOperator::Equality;
                             }
                         }
-                        (_, _) => {}
+                        PrimitiveTypeComparison::NeverSameType
+                        | PrimitiveTypeComparison::AlwaysSameTypeNeverSameValue => {
+                            if !bi.left.may_have_side_effects() && !bi.right.may_have_side_effects()
+                            {
+                                *expr = self.ast.literal_boolean_expression(
+                                    self.ast.boolean_literal(bi.span, false),
+                                );
+                            } else {
+                                bi.operator = BinaryOperator::Equality;
+                            }
+                        }
                     }
                 }
-                _ => {}
             };
         }
     }
