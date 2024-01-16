@@ -180,12 +180,6 @@ impl<'a> Compressor<'a> {
     pub(crate) fn fold_expression<'b>(&mut self, expr: &'b mut Expression<'a>) {
         let folded_expr = match expr {
             Expression::BinaryExpression(binary_expr) => match binary_expr.operator {
-                // NOTE: string concat folding breaks our current evaluation of Test262 tests. The
-                // minifier is tested by comparing output of running the minifier once and twice,
-                // respectively. Since Test262Error messages include string concats, the outputs
-                // don't match (even though the produced code is valid). Additionally, We'll likely
-                // want to add `evaluate` checks for all constant folding, not just additions, but
-                // we're adding this here until a decision is made.
                 BinaryOperator::Equality
                 | BinaryOperator::Inequality
                 | BinaryOperator::StrictEquality
@@ -207,6 +201,12 @@ impl<'a> Compressor<'a> {
                     &binary_expr.left,
                     &binary_expr.right,
                 ),
+                // NOTE: string concat folding breaks our current evaluation of Test262 tests. The
+                // minifier is tested by comparing output of running the minifier once and twice,
+                // respectively. Since Test262Error messages include string concats, the outputs
+                // don't match (even though the produced code is valid). Additionally, We'll likely
+                // want to add `evaluate` checks for all constant folding, not just additions, but
+                // we're adding this here until a decision is made.
                 BinaryOperator::Addition if self.options.evaluate => {
                     self.try_fold_addition(binary_expr.span, &binary_expr.left, &binary_expr.right)
                 }
