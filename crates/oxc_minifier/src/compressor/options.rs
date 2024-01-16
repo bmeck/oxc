@@ -49,7 +49,7 @@ impl Default for CompressOptions {
             join_vars: true,
             loops: true,
             typeofs: true,
-            types: false,
+            types: true,
         }
     }
 }

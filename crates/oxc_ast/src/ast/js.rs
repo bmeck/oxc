@@ -1,7 +1,7 @@
 use std::{cell::Cell, fmt, hash::Hash};
 
 use num_bigint::BigInt;
-use num_traits::{ToPrimitive, Zero};
+use num_traits::{One, Pow, ToPrimitive, Zero};
 use oxc_allocator::{Box, Vec};
 use oxc_span::{Atom, SourceType, Span};
 use oxc_syntax::{
@@ -286,95 +286,30 @@ impl<'a> Expression<'a> {
         }
     }
 
-    fn evaluate_typeof_type(&self, exp: &Expression) -> Option<PrimitiveType> {
-        exp.evaluate_to_specific_primitive_type().map(|t| match t {
-            PrimitiveType::Null | PrimitiveType::Object => {
-                PrimitiveType::String(StringConstraint::Value(Atom::from("object")))
-            }
-            PrimitiveType::Undefined => {
-                PrimitiveType::String(StringConstraint::Value(Atom::from("undefined")))
-            }
-            PrimitiveType::String(_) => {
-                PrimitiveType::String(StringConstraint::Value(Atom::from("string")))
-            }
-            PrimitiveType::Boolean(_) => {
-                PrimitiveType::String(StringConstraint::Value(Atom::from("boolean")))
-            }
-            PrimitiveType::Number(_) => {
-                PrimitiveType::String(StringConstraint::Value(Atom::from("number")))
-            }
-            PrimitiveType::Symbol => {
-                PrimitiveType::String(StringConstraint::Value(Atom::from("symbol")))
-            }
-            PrimitiveType::Function => {
-                PrimitiveType::String(StringConstraint::Value(Atom::from("function")))
-            }
-            PrimitiveType::BigInt(_) => {
-                PrimitiveType::String(StringConstraint::Value(Atom::from("bigint")))
-            }
-            PrimitiveType::Panic => PrimitiveType::String(StringConstraint::None),
-        })
-    }
-
-    pub fn evaluate_unary_expression_type(&self, uexp: &UnaryExpression) -> Option<PrimitiveType> {
+    pub fn evaluate_unary_expression_type(&self, uexp: &UnaryExpression) -> PrimitiveType {
         match uexp.operator {
-            UnaryOperator::Typeof => self.evaluate_typeof_type(&uexp.argument),
-            UnaryOperator::Delete => Some(PrimitiveType::Boolean(BooleanConstraint::None)),
+            UnaryOperator::Typeof => {
+                uexp.argument.evaluate_to_specific_primitive_type().evaluate_typeof_type()
+            }
+            UnaryOperator::Delete => PrimitiveType::Boolean(BooleanConstraint::None),
             UnaryOperator::LogicalNot => {
-                uexp.argument.evaluate_to_specific_primitive_type().map_or_else(
-                    || Some(PrimitiveType::Boolean(BooleanConstraint::None)),
-                    |arg_type| match arg_type.narrow_as_bool_type() {
-                        PrimitiveType::Boolean(BooleanConstraint::Value(v)) => {
-                            Some(PrimitiveType::Boolean(BooleanConstraint::Value(!v)))
-                        }
-                        _ => Some(PrimitiveType::Boolean(BooleanConstraint::None)),
-                    },
-                )
+                uexp.argument.evaluate_to_specific_primitive_type().logical_not()
             }
             UnaryOperator::UnaryPlus => {
-                uexp.argument.evaluate_to_specific_primitive_type().map_or_else(
-                    || Some(PrimitiveType::Number(NumberConstraint::None)),
-                    |ref arg_type| {
-                        let narrow_type = arg_type.narrow_as_number_type();
-                        match narrow_type {
-                            PrimitiveType::Number(NumberConstraint::Value(_)) => Some(narrow_type),
-                            _ => Some(PrimitiveType::Number(NumberConstraint::None)),
-                        }
-                    },
-                )
+                // per spec BigInts do not convert this way, can do -(-(n))
+                uexp.argument.evaluate_to_specific_primitive_type().narrow_as_number_type()
             }
             UnaryOperator::UnaryNegation => {
-                uexp.argument.evaluate_to_specific_primitive_type().map_or_else(
-                    || Some(PrimitiveType::Number(NumberConstraint::None)),
-                    |arg_type| match arg_type.narrow_as_number_type() {
-                        PrimitiveType::Number(NumberConstraint::Value(v)) => {
-                            Some(PrimitiveType::Number(NumberConstraint::Value(-v)))
-                        }
-                        _ => Some(PrimitiveType::Number(NumberConstraint::None)),
-                    },
-                )
+                uexp.argument.evaluate_to_specific_primitive_type().unary_negation()
             }
             UnaryOperator::BitwiseNot => {
-                uexp.argument.evaluate_to_specific_primitive_type().map_or_else(
-                    || Some(PrimitiveType::Number(NumberConstraint::None)),
-                    |arg_type| match arg_type.narrow_as_number_type() {
-                        PrimitiveType::Number(NumberConstraint::Value(v)) => {
-                            let as_i32 = num_traits::ToPrimitive::to_i32(&v);
-                            let modified = (!as_i32.unwrap_or(i32::MAX)).to_f64();
-                            modified.map_or_else(
-                                || Some(PrimitiveType::Number(NumberConstraint::None)),
-                                |v| Some(PrimitiveType::Number(NumberConstraint::Value(v))),
-                            )
-                        }
-                        _ => Some(PrimitiveType::Number(NumberConstraint::None)),
-                    },
-                )
+                uexp.argument.evaluate_to_specific_primitive_type().bitwise_not()
             }
-            UnaryOperator::Void => Some(PrimitiveType::Undefined),
+            UnaryOperator::Void => PrimitiveType::Undefined,
         }
     }
 
-    pub fn evaluate_to_specific_primitive_type(&self) -> Option<PrimitiveType> {
+    pub fn evaluate_to_specific_primitive_type(&self) -> PrimitiveType {
         // return None;
         match self {
             Self::UnaryExpression(uexp) => self.evaluate_unary_expression_type(uexp),
@@ -389,16 +324,14 @@ impl<'a> Expression<'a> {
                     | BinaryOperator::GreaterThan
                     | BinaryOperator::GreaterEqualThan
                     | BinaryOperator::In
-                    | BinaryOperator::Instanceof => {
-                        Some(PrimitiveType::Boolean(BooleanConstraint::None))
-                    }
+                    | BinaryOperator::Instanceof => PrimitiveType::Boolean(BooleanConstraint::None),
 
                     // String concat or Number means no well defined type
                     BinaryOperator::Addition => {
                         let left_type = bi.left.evaluate_to_specific_primitive_type();
                         let right_type = bi.right.evaluate_to_specific_primitive_type();
                         match (left_type, right_type) {
-                            (Some(PrimitiveType::String(left_c)), Some(right)) => {
+                            (PrimitiveType::String(left_c), right) => {
                                 let narrow_right_type = right.narrow_as_string_type();
                                 match narrow_right_type {
                                     PrimitiveType::String(StringConstraint::Value(right_v)) => {
@@ -407,19 +340,17 @@ impl<'a> Expression<'a> {
                                                 let atom = Atom::from(
                                                     left_v.as_str().to_owned() + right_v.as_str(),
                                                 );
-                                                Some(PrimitiveType::String(
-                                                    StringConstraint::Value(atom),
-                                                ))
+                                                PrimitiveType::String(StringConstraint::Value(atom))
                                             }
                                             StringConstraint::None => {
-                                                Some(PrimitiveType::String(StringConstraint::None))
+                                                PrimitiveType::String(StringConstraint::None)
                                             }
                                         }
                                     }
-                                    _ => Some(PrimitiveType::String(StringConstraint::None)),
+                                    _ => PrimitiveType::String(StringConstraint::None),
                                 }
                             }
-                            (Some(left), Some(PrimitiveType::String(right_c))) => {
+                            (left, PrimitiveType::String(right_c)) => {
                                 let narrow_left_type = left.narrow_as_string_type();
                                 match narrow_left_type {
                                     PrimitiveType::String(StringConstraint::Value(right_v)) => {
@@ -428,77 +359,67 @@ impl<'a> Expression<'a> {
                                                 let atom = Atom::from(
                                                     left_v.as_str().to_owned() + right_v.as_str(),
                                                 );
-                                                Some(PrimitiveType::String(
-                                                    StringConstraint::Value(atom),
-                                                ))
+                                                PrimitiveType::String(StringConstraint::Value(atom))
                                             }
                                             StringConstraint::None => {
-                                                Some(PrimitiveType::String(StringConstraint::None))
+                                                PrimitiveType::String(StringConstraint::None)
                                             }
                                         }
                                     }
-                                    _ => Some(PrimitiveType::String(StringConstraint::None)),
+                                    _ => PrimitiveType::String(StringConstraint::None),
                                 }
                             }
-                            (Some(PrimitiveType::Number(left_c)), Some(right)) => {
+                            (PrimitiveType::Number(left_c), right) => {
                                 let narrow_right_type = right.narrow_as_number_type();
                                 match narrow_right_type {
                                     PrimitiveType::Number(NumberConstraint::Value(right_v)) => {
                                         match left_c {
                                             NumberConstraint::Value(left_v) => {
-                                                Some(PrimitiveType::Number(
-                                                    NumberConstraint::Value(left_v + right_v),
+                                                PrimitiveType::Number(NumberConstraint::Value(
+                                                    left_v + right_v,
                                                 ))
                                             }
                                             NumberConstraint::None => {
-                                                Some(PrimitiveType::Number(NumberConstraint::None))
+                                                PrimitiveType::Number(NumberConstraint::None)
                                             }
                                         }
                                     }
-                                    _ => Some(PrimitiveType::String(StringConstraint::None)),
+                                    _ => PrimitiveType::String(StringConstraint::None),
                                 }
                             }
-                            (Some(left), Some(PrimitiveType::Number(right_c))) => {
+                            (left, PrimitiveType::Number(right_c)) => {
                                 let narrow_left_type = left.narrow_as_number_type();
                                 match narrow_left_type {
                                     PrimitiveType::Number(NumberConstraint::Value(left_v)) => {
                                         match right_c {
                                             NumberConstraint::Value(right_v) => {
-                                                Some(PrimitiveType::Number(
-                                                    NumberConstraint::Value(left_v + right_v),
+                                                PrimitiveType::Number(NumberConstraint::Value(
+                                                    left_v + right_v,
                                                 ))
                                             }
                                             NumberConstraint::None => {
-                                                Some(PrimitiveType::Number(NumberConstraint::None))
+                                                PrimitiveType::Number(NumberConstraint::None)
                                             }
                                         }
                                     }
-                                    _ => Some(PrimitiveType::String(StringConstraint::None)),
+                                    _ => PrimitiveType::String(StringConstraint::None),
                                 }
                             }
-                            _ => None,
+                            (
+                                PrimitiveType::BigInt(BigIntConstraint::Value(left)),
+                                PrimitiveType::BigInt(BigIntConstraint::Value(right)),
+                            ) => PrimitiveType::BigInt(BigIntConstraint::Value(left + right)),
+                            _ => PrimitiveType::Any,
                         }
                     }
-                    BinaryOperator::Subtraction => {
-                        let left_type = bi
-                            .left
-                            .evaluate_to_specific_primitive_type()
-                            .map(|arg| arg.narrow_as_number_type());
-                        let right_type = bi
-                            .right
-                            .evaluate_to_specific_primitive_type()
-                            .map(|arg| arg.narrow_as_number_type());
-                        println!("{left_type:?} {right_type:?}");
-                        if let (
-                            Some(PrimitiveType::Number(NumberConstraint::Value(left))),
-                            Some(PrimitiveType::Number(NumberConstraint::Value(right))),
-                        ) = (left_type, right_type)
-                        {
-                            Some(PrimitiveType::Number(NumberConstraint::Value(left - right)))
-                        } else {
-                            None
-                        }
-                    }
+                    BinaryOperator::Subtraction => bi
+                        .left
+                        .evaluate_to_specific_primitive_type()
+                        .subtraction(bi.right.evaluate_to_specific_primitive_type()),
+                    BinaryOperator::Exponential => bi
+                        .left
+                        .evaluate_to_specific_primitive_type()
+                        .exponential(bi.right.evaluate_to_specific_primitive_type()),
                     BinaryOperator::Multiplication
                     | BinaryOperator::Division
                     | BinaryOperator::ShiftLeft
@@ -507,79 +428,80 @@ impl<'a> Expression<'a> {
                     | BinaryOperator::Remainder
                     | BinaryOperator::BitwiseOR
                     | BinaryOperator::BitwiseXOR
-                    | BinaryOperator::BitwiseAnd
-                    | BinaryOperator::Exponential => {
-                        Some(PrimitiveType::Number(NumberConstraint::None))
-                    }
+                    | BinaryOperator::BitwiseAnd => PrimitiveType::Number(NumberConstraint::None),
                 }
             }
-            Self::UpdateExpression(_up) => Some(PrimitiveType::Number(NumberConstraint::None)),
+            // could be a string or some heinous object
+            Self::UpdateExpression(_up) => PrimitiveType::Any,
             Self::AssignmentExpression(assign) => {
                 assign.right.evaluate_to_specific_primitive_type()
             }
             Self::SequenceExpression(seq) => seq
                 .expressions
                 .last()
-                .map_or_else(|| None, Self::evaluate_to_specific_primitive_type),
+                .map_or(PrimitiveType::Any, |l| l.evaluate_to_specific_primitive_type()),
             Self::ParenthesizedExpression(par) => {
                 par.expression.evaluate_to_specific_primitive_type()
             }
             Self::BigintLiteral(b) => {
-                Some(PrimitiveType::BigInt(BigIntConstraint::Value(b.value.clone())))
+                PrimitiveType::BigInt(BigIntConstraint::Value(b.value.clone()))
             }
             Self::ConditionalExpression(cond) => {
-                cond.consequent.evaluate_to_specific_primitive_type().map_or_else(
-                    || None,
-                    |consequent_type| {
-                        cond.alternate.evaluate_to_specific_primitive_type().map_or_else(
-                            || None,
-                            |alternate_type| {
-                                let wide_type = consequent_type.widen(&alternate_type);
-                                match wide_type {
-                                    SimpleType::Unknown => None,
-                                    SimpleType::PrimitiveType(t) => Some(t),
-                                }
-                            },
-                        )
+                if let PrimitiveType::Boolean(BooleanConstraint::Value(v)) =
+                    cond.test.evaluate_to_specific_primitive_type().narrow_as_bool_type()
+                {
+                    if v {
+                        return cond.consequent.evaluate_to_specific_primitive_type();
+                    } else {
+                        return cond.alternate.evaluate_to_specific_primitive_type();
+                    }
+                }
+                match cond.consequent.evaluate_to_specific_primitive_type() {
+                    PrimitiveType::Any => PrimitiveType::Any,
+                    consequent_type => match cond.alternate.evaluate_to_specific_primitive_type() {
+                        PrimitiveType::Any => PrimitiveType::Any,
+                        alternate_type => {
+                            let wide_type = consequent_type.widen(&alternate_type);
+                            match wide_type {
+                                SimpleType::Unknown => PrimitiveType::Any,
+                                SimpleType::PrimitiveType(t) => t,
+                            }
+                        }
                     },
-                )
+                }
             }
             Self::LogicalExpression(cond) => {
-                cond.left.evaluate_to_specific_primitive_type().map_or_else(
-                    || None,
-                    |left_type| {
-                        cond.left.evaluate_to_specific_primitive_type().map_or_else(
-                            || None,
-                            |right_type| {
-                                if cond.operator == LogicalOperator::Coalesce
-                                    && matches!(PrimitiveType::Undefined, _left_type)
-                                {
-                                    return Some(right_type);
-                                }
-                                let wide_type = left_type.widen(&right_type);
-                                match wide_type {
-                                    SimpleType::Unknown => None,
-                                    SimpleType::PrimitiveType(t) => Some(t),
-                                }
-                            },
-                        )
+                match cond.left.evaluate_to_specific_primitive_type() {
+                    PrimitiveType::Any => PrimitiveType::Any,
+                    left_type => match cond.left.evaluate_to_specific_primitive_type() {
+                        PrimitiveType::Any => PrimitiveType::Any,
+                        right_type => {
+                            if cond.operator == LogicalOperator::Coalesce
+                                && matches!(PrimitiveType::Undefined, _left_type)
+                            {
+                                return right_type;
+                            }
+                            let wide_type = left_type.widen(&right_type);
+                            match wide_type {
+                                SimpleType::Unknown => PrimitiveType::Any,
+                                SimpleType::PrimitiveType(t) => t,
+                            }
+                        }
                     },
-                )
+                }
             }
-            Self::NullLiteral(_) => Some(PrimitiveType::Null),
-            Self::NumberLiteral(v) => Some(PrimitiveType::Number(NumberConstraint::Value(v.value))),
-            Self::BooleanLiteral(b) => {
-                Some(PrimitiveType::Boolean(BooleanConstraint::Value(b.value)))
-            }
+            Self::NullLiteral(_) => PrimitiveType::Null,
+            Self::NumberLiteral(v) => PrimitiveType::Number(NumberConstraint::Value(v.value)),
+            Self::BooleanLiteral(b) => PrimitiveType::Boolean(BooleanConstraint::Value(b.value)),
             Self::StringLiteral(b) => {
-                Some(PrimitiveType::String(StringConstraint::Value(b.value.clone())))
+                PrimitiveType::String(StringConstraint::Value(b.value.clone()))
             }
-            Self::TemplateLiteral(_t) => Some(PrimitiveType::String(StringConstraint::None)),
+            Self::TemplateLiteral(_t) => PrimitiveType::String(StringConstraint::None),
             Self::ArrowExpression(_) | Self::ClassExpression(_) | Self::FunctionExpression(_) => {
-                Some(PrimitiveType::Function)
+                PrimitiveType::Function
             }
-            Self::ObjectExpression(_) | Self::ArrayExpression(_) => Some(PrimitiveType::Object),
-            _ => None,
+            Self::ObjectExpression(_) | Self::ArrayExpression(_) => PrimitiveType::Object,
+            _ => PrimitiveType::Any,
         }
     }
 }
@@ -603,6 +525,12 @@ impl BooleanConstraint {
                 Self::None => PrimitiveTypeComparison::AlwaysSameType,
             },
             Self::None => PrimitiveTypeComparison::AlwaysSameType,
+        }
+    }
+    fn negate(&self) -> Self {
+        match self {
+            Self::None => Self::None,
+            Self::Value(v) => Self::Value(!v),
         }
     }
 }
@@ -650,6 +578,13 @@ impl BigIntConstraint {
             Self::None => PrimitiveTypeComparison::AlwaysSameType,
         }
     }
+
+    fn negate(&self) -> BigIntConstraint {
+        match self {
+            Self::Value(s) => Self::Value(-s),
+            Self::None => Self::None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -688,6 +623,13 @@ impl NumberConstraint {
             },
         }
     }
+
+    fn negate(&self) -> NumberConstraint {
+        match self {
+            Self::Value(s) => Self::Value(-s),
+            Self::None => Self::None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -696,6 +638,7 @@ pub enum SimpleType {
     Unknown,
 }
 
+/// Simple types, using TypeScript type terminology (not impl)
 #[derive(Debug, Clone)]
 pub enum PrimitiveType {
     BigInt(BigIntConstraint),
@@ -704,10 +647,11 @@ pub enum PrimitiveType {
     Null,
     Number(NumberConstraint),
     Object,
-    Panic,
+    Never,
     String(StringConstraint),
     Symbol,
     Undefined,
+    Any,
 }
 
 #[derive(Debug)]
@@ -725,6 +669,91 @@ impl PrimitiveTypeComparison {
 }
 
 impl PrimitiveType {
+    pub fn evaluate_typeof_type(&self) -> Self {
+        match self {
+            PrimitiveType::Null | PrimitiveType::Object => {
+                PrimitiveType::String(StringConstraint::Value(Atom::from("object")))
+            }
+            PrimitiveType::Undefined => {
+                PrimitiveType::String(StringConstraint::Value(Atom::from("undefined")))
+            }
+            PrimitiveType::String(_) => {
+                PrimitiveType::String(StringConstraint::Value(Atom::from("string")))
+            }
+            PrimitiveType::Boolean(_) => {
+                PrimitiveType::String(StringConstraint::Value(Atom::from("boolean")))
+            }
+            PrimitiveType::Number(_) => {
+                PrimitiveType::String(StringConstraint::Value(Atom::from("number")))
+            }
+            PrimitiveType::Symbol => {
+                PrimitiveType::String(StringConstraint::Value(Atom::from("symbol")))
+            }
+            PrimitiveType::Function => {
+                PrimitiveType::String(StringConstraint::Value(Atom::from("function")))
+            }
+            PrimitiveType::BigInt(_) => {
+                PrimitiveType::String(StringConstraint::Value(Atom::from("bigint")))
+            }
+            PrimitiveType::Never | PrimitiveType::Any => {
+                PrimitiveType::String(StringConstraint::None)
+            }
+        }
+    }
+
+    pub fn logical_not(&self) -> Self {
+        match self.narrow_as_bool_type() {
+            PrimitiveType::Boolean(c) => PrimitiveType::Boolean(c.negate()),
+            _ => PrimitiveType::Boolean(BooleanConstraint::None),
+        }
+    }
+    pub fn unary_negation(&self) -> Self {
+        match self.narrow_as_number_type() {
+            PrimitiveType::BigInt(c) => PrimitiveType::BigInt(c.negate()),
+            PrimitiveType::Number(c) => PrimitiveType::Number(c.negate()),
+            _ => PrimitiveType::Number(NumberConstraint::None),
+        }
+    }
+    pub fn subtraction(&self, other: PrimitiveType) -> PrimitiveType {
+        // This is the vastly more common case
+        match (self.narrow_as_number_type(), other.narrow_as_number_type()) {
+            (
+                PrimitiveType::Number(NumberConstraint::Value(left)),
+                PrimitiveType::Number(NumberConstraint::Value(right)),
+            ) => PrimitiveType::Number(NumberConstraint::Value(left - right)),
+            (_left, _right) => {
+                if let (
+                    PrimitiveType::BigInt(BigIntConstraint::Value(left)),
+                    PrimitiveType::BigInt(BigIntConstraint::Value(right)),
+                ) = (self, other)
+                {
+                    return PrimitiveType::BigInt(BigIntConstraint::Value(left - right));
+                }
+                PrimitiveType::Any
+            }
+        }
+    }
+    pub fn exponential(&self, other: PrimitiveType) -> PrimitiveType {
+        // This is the vastly more common case
+        match (self.narrow_as_number_type(), other.narrow_as_number_type()) {
+            (
+                PrimitiveType::Number(NumberConstraint::Value(left)),
+                PrimitiveType::Number(NumberConstraint::Value(right)),
+            ) => PrimitiveType::Number(NumberConstraint::Value(left.pow(right))),
+            (_left, _right) => {
+                if let (
+                    PrimitiveType::BigInt(BigIntConstraint::Value(left)),
+                    PrimitiveType::BigInt(BigIntConstraint::Value(right)),
+                ) = (self, other)
+                {
+                    return PrimitiveType::BigInt(BigIntConstraint::Value(
+                        left.pow(right.try_into().expect("bigint too big to pow")),
+                    ));
+                }
+                PrimitiveType::Any
+            }
+        }
+    }
     pub fn widen(&self, other: &Self) -> SimpleType {
         match self.compare(other) {
             PrimitiveTypeComparison::Unknown | PrimitiveTypeComparison::NeverSameType => {
@@ -746,7 +775,7 @@ impl PrimitiveType {
                 Self::String(_) => SimpleType::PrimitiveType(Self::String(StringConstraint::None)),
                 Self::Symbol => SimpleType::PrimitiveType(Self::Symbol),
                 Self::Undefined => SimpleType::PrimitiveType(Self::Undefined),
-                Self::Panic => SimpleType::Unknown,
+                Self::Never | PrimitiveType::Any => SimpleType::Unknown,
             },
         }
     }
@@ -757,10 +786,11 @@ impl PrimitiveType {
         )
     }
     pub fn compare(&self, other: &Self) -> PrimitiveTypeComparison {
-        if matches!(other, Self::Panic) {
+        if matches!(other, Self::Never | Self::Any) {
             return PrimitiveTypeComparison::Unknown;
         }
         match self {
+            Self::Any => PrimitiveTypeComparison::Unknown,
             Self::Object => {
                 if matches!(other, Self::Object) {
                     PrimitiveTypeComparison::AlwaysSameType
@@ -796,7 +826,7 @@ impl PrimitiveType {
                 _ => PrimitiveTypeComparison::NeverSameType,
             },
             // symbols are weird
-            Self::Symbol | Self::Panic => PrimitiveTypeComparison::Unknown,
+            Self::Symbol | Self::Never => PrimitiveTypeComparison::Unknown,
             Self::Undefined => match other {
                 Self::Undefined => PrimitiveTypeComparison::AlwaysSameTypeAndValue,
                 _ => PrimitiveTypeComparison::NeverSameType,
@@ -832,14 +862,16 @@ impl PrimitiveType {
                     Self::Boolean(BooleanConstraint::Value(true))
                 }
             }
-            Self::Symbol => Self::Boolean(BooleanConstraint::Value(true)),
+            Self::Symbol | Self::Object | Self::Function => {
+                Self::Boolean(BooleanConstraint::Value(true))
+            }
             _ => Self::Boolean(BooleanConstraint::None),
         }
     }
 
     fn narrow_as_number_type(&self) -> Self {
         match self {
-            Self::BigInt(BigIntConstraint::Value(_)) | Self::Symbol => Self::Panic,
+            Self::BigInt(BigIntConstraint::Value(_)) | Self::Symbol => Self::Never,
             Self::Boolean(BooleanConstraint::Value(v)) => {
                 Self::Number(NumberConstraint::Value(if *v { 1.0 } else { 0.0 }))
             }
@@ -856,6 +888,31 @@ impl PrimitiveType {
         }
     }
 
+    /// this should only happen in very specific scenarios where
+    /// number has been eliminated from the possible comparisons
+    fn narrow_as_bigint_type(&self) -> Self {
+        match self {
+            Self::Number(NumberConstraint::Value(_)) | Self::Symbol => Self::Never,
+            Self::Boolean(BooleanConstraint::Value(v)) => {
+                Self::BigInt(BigIntConstraint::Value(if *v {
+                    BigInt::one()
+                } else {
+                    BigInt::zero()
+                }))
+            }
+            Self::Null | Self::Undefined => Self::BigInt(BigIntConstraint::Value(BigInt::zero())),
+            Self::BigInt(_) => self.clone(),
+            Self::String(StringConstraint::Value(v)) => {
+                if v.is_empty() {
+                    Self::BigInt(BigIntConstraint::Value(BigInt::zero()))
+                } else {
+                    Self::BigInt(BigIntConstraint::None)
+                }
+            }
+            _ => Self::BigInt(BigIntConstraint::None),
+        }
+    }
+
     fn narrow_as_string_type(&self) -> Self {
         match self {
             Self::BigInt(BigIntConstraint::Value(v)) => {
@@ -869,9 +926,27 @@ impl PrimitiveType {
                 Self::String(StringConstraint::Value(Atom::from(v.to_string())))
             }
             Self::String(StringConstraint::Value(_)) => self.clone(),
-            Self::Symbol => Self::Panic,
+            Self::Symbol => Self::Never,
             Self::Undefined => Self::String(StringConstraint::Value(Atom::from("undefined"))),
             _ => Self::String(StringConstraint::None),
+        }
+    }
+
+    fn bitwise_not(&self) -> PrimitiveType {
+        match self.narrow_as_number_type() {
+            PrimitiveType::Number(NumberConstraint::Value(v)) => {
+                let as_i32 = num_traits::ToPrimitive::to_i32(&v);
+                let modified = (!as_i32.unwrap_or(i32::MAX)).to_f64();
+                modified.map_or_else(
+                    || PrimitiveType::Number(NumberConstraint::None),
+                    |v| PrimitiveType::Number(NumberConstraint::Value(v)),
+                )
+            }
+            PrimitiveType::BigInt(BigIntConstraint::Value(v)) => {
+                let modified = !v;
+                PrimitiveType::BigInt(BigIntConstraint::Value(modified))
+            }
+            _ => PrimitiveType::Number(NumberConstraint::None),
         }
     }
 }
