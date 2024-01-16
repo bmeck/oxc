@@ -93,7 +93,7 @@ impl<'a> Compressor<'a> {
             }
         }
     }
-    
+
     /// Drop `drop_debugger` statement.
     /// Enabled by `compress.drop_debugger`
     fn drop_debugger(&mut self, stmt: &Statement<'a>) -> bool {
@@ -337,7 +337,7 @@ impl<'a> Compressor<'a> {
 }
 
 impl<'a> VisitMut<'a> for Compressor<'a> {
-    fn visit_statements(&mut self, stmts: &mut Vec<'a, Statement<'a>>) {        stmts.retain(|stmt| {
+    fn visit_statements(&mut self, stmts: &mut Vec<'a, Statement<'a>>) {
         stmts.retain(|stmt| {
             if self.drop_debugger(stmt) {
                 return false;
@@ -366,6 +366,8 @@ impl<'a> VisitMut<'a> for Compressor<'a> {
         if let Some(arg) = &mut stmt.argument {
             self.visit_expression(arg);
         }
+        // We may fold `void 1` to `void 0`, so compress it after visiting
+        self.compress_return_statement(stmt);
     }
 
     fn visit_variable_declaration(&mut self, decl: &mut VariableDeclaration<'a>) {
