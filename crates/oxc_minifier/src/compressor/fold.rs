@@ -186,10 +186,52 @@ impl<'a> Compressor<'a> {
                 // don't match (even though the produced code is valid). Additionally, We'll likely
                 // want to add `evaluate` checks for all constant folding, not just additions, but
                 // we're adding this here until a decision is made.
+                BinaryOperator::Equality
+                | BinaryOperator::Inequality
+                | BinaryOperator::StrictEquality
+                | BinaryOperator::StrictInequality
+                | BinaryOperator::LessThan
+                | BinaryOperator::LessEqualThan
+                | BinaryOperator::GreaterThan
+                | BinaryOperator::GreaterEqualThan => self.try_fold_comparison(
+                    binary_expr.span,
+                    binary_expr.operator,
+                    &binary_expr.left,
+                    &binary_expr.right,
+                ),
+                BinaryOperator::ShiftLeft
+                | BinaryOperator::ShiftRight
+                | BinaryOperator::ShiftRightZeroFill => self.try_fold_shift(
+                    binary_expr.span,
+                    binary_expr.operator,
+                    &binary_expr.left,
+                    &binary_expr.right,
+                ),
                 BinaryOperator::Addition if self.options.evaluate => {
                     self.try_fold_addition(binary_expr.span, &binary_expr.left, &binary_expr.right)
                 }
                 _ => None,
+            },
+            Expression::UnaryExpression(unary_expr) => match unary_expr.operator {
+                UnaryOperator::Typeof => {
+                    self.try_fold_typeof(unary_expr.span, &unary_expr.argument)
+                }
+                UnaryOperator::UnaryPlus
+                | UnaryOperator::UnaryNegation
+                | UnaryOperator::LogicalNot
+                | UnaryOperator::BitwiseNot
+                    if !unary_expr.may_have_side_effects() =>
+                {
+                    self.try_fold_unary_operator(unary_expr)
+                }
+                UnaryOperator::Void => self.try_reduce_void(unary_expr),
+                _ => None,
+            },
+            Expression::LogicalExpression(logic_expr) => match logic_expr.operator {
+                LogicalOperator::And | LogicalOperator::Or => {
+                    self.try_fold_and_or(logic_expr.operator, logic_expr)
+                }
+                LogicalOperator::Coalesce => None,
             },
             _ => None,
         };
