@@ -1,7 +1,7 @@
-use std::{cell::Cell, fmt, hash::Hash};
+use std::{cell::Cell, fmt, hash::Hash, ops::Rem};
 
 use num_bigint::BigInt;
-use num_traits::{One, Pow, ToPrimitive, Zero};
+use num_traits::{One, ToPrimitive, Zero, Signed};
 use oxc_allocator::{Box, Vec};
 use oxc_span::{Atom, SourceType, Span};
 use oxc_syntax::{
@@ -289,34 +289,44 @@ impl<'a> Expression<'a> {
     pub fn evaluate_unary_expression_type(&self, uexp: &UnaryExpression) -> PrimitiveType {
         match uexp.operator {
             UnaryOperator::Typeof => {
-                uexp.argument.evaluate_to_specific_primitive_type().evaluate_typeof_type()
+                uexp.argument.evaluate_to_specific_primitive_type().ecma_typeof_operator()
             }
             UnaryOperator::Delete => PrimitiveType::Boolean(BooleanConstraint::None),
             UnaryOperator::LogicalNot => {
-                uexp.argument.evaluate_to_specific_primitive_type().logical_not()
+                uexp.argument.evaluate_to_specific_primitive_type().ecma_logical_not_operator()
             }
             UnaryOperator::UnaryPlus => {
                 // per spec BigInts do not convert this way, can do -(-(n))
-                uexp.argument.evaluate_to_specific_primitive_type().narrow_as_number_type()
+                uexp.argument.evaluate_to_specific_primitive_type().ecma_to_number()
             }
             UnaryOperator::UnaryNegation => {
-                uexp.argument.evaluate_to_specific_primitive_type().unary_negation()
+                uexp.argument.evaluate_to_specific_primitive_type().ecma_unary_minus_operator()
             }
             UnaryOperator::BitwiseNot => {
-                uexp.argument.evaluate_to_specific_primitive_type().bitwise_not()
+                uexp.argument.evaluate_to_specific_primitive_type().ecma_bitwise_not_operator()
             }
             UnaryOperator::Void => PrimitiveType::Undefined,
         }
     }
 
+    /// evaluates the type of the Expression to a constrained type using ECMA semantics
+    /// operations should live on 
     pub fn evaluate_to_specific_primitive_type(&self) -> PrimitiveType {
         // return None;
         match self {
             Self::UnaryExpression(uexp) => self.evaluate_unary_expression_type(uexp),
             Self::BinaryExpression(bi) => {
                 match bi.operator {
-                    BinaryOperator::Equality
-                    | BinaryOperator::Inequality
+                    BinaryOperator::Equality => {
+                        let left_type = bi.left.evaluate_to_specific_primitive_type();
+                        let right_type = bi.right.evaluate_to_specific_primitive_type();
+                        left_type.ecma_is_loosely_equal(right_type)
+                    }
+                    BinaryOperator::Inequality => {
+                        let left_type = bi.left.evaluate_to_specific_primitive_type();
+                        let right_type = bi.right.evaluate_to_specific_primitive_type();
+                        left_type.ecma_is_loosely_equal(right_type).ecma_logical_not_operator()
+                    }
                     | BinaryOperator::StrictEquality
                     | BinaryOperator::StrictInequality
                     | BinaryOperator::LessThan
@@ -328,98 +338,72 @@ impl<'a> Expression<'a> {
 
                     // String concat or Number means no well defined type
                     BinaryOperator::Addition => {
-                        let left_type = bi.left.evaluate_to_specific_primitive_type();
-                        let right_type = bi.right.evaluate_to_specific_primitive_type();
+                        let left_type = bi.left.evaluate_to_specific_primitive_type().ecma_to_primitive(ToPrimitiveHint::Default);
+                        let right_type = bi.right.evaluate_to_specific_primitive_type().ecma_to_primitive(ToPrimitiveHint::Default);
+                        let concat_strings = |a: Atom, b: Atom| Atom::from(a.as_str().to_owned() + b.as_str());
                         match (left_type, right_type) {
-                            (PrimitiveType::String(left_c), right) => {
-                                let narrow_right_type = right.narrow_as_string_type();
-                                match narrow_right_type {
-                                    PrimitiveType::String(StringConstraint::Value(right_v)) => {
+                            (PrimitiveType::String(left_c), right_type) => {
+                                match right_type.ecma_to_string() {
+                                    PrimitiveType::Never => PrimitiveType::Never,
+                                    PrimitiveType::String(StringConstraint::Value(right)) => {
                                         match left_c {
-                                            StringConstraint::Value(left_v) => {
-                                                let atom = Atom::from(
-                                                    left_v.as_str().to_owned() + right_v.as_str(),
-                                                );
-                                                PrimitiveType::String(StringConstraint::Value(atom))
-                                            }
-                                            StringConstraint::None => {
-                                                PrimitiveType::String(StringConstraint::None)
-                                            }
+                                            StringConstraint::None => PrimitiveType::String(StringConstraint::None),
+                                            StringConstraint::Value(left) => PrimitiveType::String(StringConstraint::Value(concat_strings(left, right)))
                                         }
+                                    },
+                                    _ => {
+                                        PrimitiveType::String(StringConstraint::None)
                                     }
-                                    _ => PrimitiveType::String(StringConstraint::None),
                                 }
-                            }
-                            (left, PrimitiveType::String(right_c)) => {
-                                let narrow_left_type = left.narrow_as_string_type();
-                                match narrow_left_type {
-                                    PrimitiveType::String(StringConstraint::Value(right_v)) => {
+                            },
+                            (left_type, PrimitiveType::String(right_c)) => {
+                                match left_type.ecma_to_string() {
+                                    PrimitiveType::Never => PrimitiveType::Never,
+                                    PrimitiveType::String(StringConstraint::Value(left)) => {
                                         match right_c {
-                                            StringConstraint::Value(left_v) => {
-                                                let atom = Atom::from(
-                                                    left_v.as_str().to_owned() + right_v.as_str(),
-                                                );
-                                                PrimitiveType::String(StringConstraint::Value(atom))
-                                            }
-                                            StringConstraint::None => {
-                                                PrimitiveType::String(StringConstraint::None)
-                                            }
+                                            StringConstraint::None => PrimitiveType::String(StringConstraint::None),
+                                            StringConstraint::Value(right) => PrimitiveType::String(StringConstraint::Value(concat_strings(left, right)))
                                         }
+                                    },
+                                    _ => {
+                                        PrimitiveType::String(StringConstraint::None)
                                     }
-                                    _ => PrimitiveType::String(StringConstraint::None),
+                                }
+                            },
+                            (left_type, right_type) => {
+                                let left_numeric = left_type.ecma_to_numeric();
+                                let right_numeric: PrimitiveType = right_type.ecma_to_numeric();
+                                match (left_numeric, right_numeric) {
+                                    // can't mix types
+                                    (PrimitiveType::Number(_), PrimitiveType::BigInt(_)) | (PrimitiveType::BigInt(_), PrimitiveType::Number(_)) => {
+                                        PrimitiveType::Never
+                                    },
+                                    (PrimitiveType::Number(NumberConstraint::Value(left)), PrimitiveType::Number(NumberConstraint::Value(right))) => {
+                                        PrimitiveType::Number(NumberConstraint::Value(left + right))
+                                    }
+                                    (PrimitiveType::Number(_), _) | (_, PrimitiveType::Number(_)) => {
+                                        PrimitiveType::Number(NumberConstraint::None)
+                                    }
+                                    (PrimitiveType::BigInt(BigIntConstraint::Value(left)), PrimitiveType::BigInt(BigIntConstraint::Value(right))) => {
+                                        PrimitiveType::BigInt(BigIntConstraint::Value(left + right))
+                                    }
+                                    (PrimitiveType::BigInt(_), _) | (_, PrimitiveType::BigInt(_)) => {
+                                        PrimitiveType::BigInt(BigIntConstraint::None)
+                                    }
+                                    // could be bigint or number
+                                    _ => PrimitiveType::Any
                                 }
                             }
-                            (PrimitiveType::Number(left_c), right) => {
-                                let narrow_right_type = right.narrow_as_number_type();
-                                match narrow_right_type {
-                                    PrimitiveType::Number(NumberConstraint::Value(right_v)) => {
-                                        match left_c {
-                                            NumberConstraint::Value(left_v) => {
-                                                PrimitiveType::Number(NumberConstraint::Value(
-                                                    left_v + right_v,
-                                                ))
-                                            }
-                                            NumberConstraint::None => {
-                                                PrimitiveType::Number(NumberConstraint::None)
-                                            }
-                                        }
-                                    }
-                                    _ => PrimitiveType::String(StringConstraint::None),
-                                }
-                            }
-                            (left, PrimitiveType::Number(right_c)) => {
-                                let narrow_left_type = left.narrow_as_number_type();
-                                match narrow_left_type {
-                                    PrimitiveType::Number(NumberConstraint::Value(left_v)) => {
-                                        match right_c {
-                                            NumberConstraint::Value(right_v) => {
-                                                PrimitiveType::Number(NumberConstraint::Value(
-                                                    left_v + right_v,
-                                                ))
-                                            }
-                                            NumberConstraint::None => {
-                                                PrimitiveType::Number(NumberConstraint::None)
-                                            }
-                                        }
-                                    }
-                                    _ => PrimitiveType::String(StringConstraint::None),
-                                }
-                            }
-                            (
-                                PrimitiveType::BigInt(BigIntConstraint::Value(left)),
-                                PrimitiveType::BigInt(BigIntConstraint::Value(right)),
-                            ) => PrimitiveType::BigInt(BigIntConstraint::Value(left + right)),
-                            _ => PrimitiveType::Any,
                         }
                     }
                     BinaryOperator::Subtraction => bi
                         .left
                         .evaluate_to_specific_primitive_type()
-                        .subtraction(bi.right.evaluate_to_specific_primitive_type()),
+                        .ecma_subtraction_operator(bi.right.evaluate_to_specific_primitive_type()),
                     BinaryOperator::Exponential => bi
                         .left
                         .evaluate_to_specific_primitive_type()
-                        .exponential(bi.right.evaluate_to_specific_primitive_type()),
+                        .ecma_numeric_exponentiate(bi.right.evaluate_to_specific_primitive_type()),
                     BinaryOperator::Multiplication
                     | BinaryOperator::Division
                     | BinaryOperator::ShiftLeft
@@ -431,44 +415,26 @@ impl<'a> Expression<'a> {
                     | BinaryOperator::BitwiseAnd => PrimitiveType::Number(NumberConstraint::None),
                 }
             }
-            // could be a string or some heinous object
+            // could be either number or bigint
             Self::UpdateExpression(_up) => PrimitiveType::Any,
-            Self::AssignmentExpression(assign) => {
-                assign.right.evaluate_to_specific_primitive_type()
-            }
+            Self::AssignmentExpression(assign) => assign.right.evaluate_to_specific_primitive_type(),
             Self::SequenceExpression(seq) => seq
                 .expressions
                 .last()
                 .map_or(PrimitiveType::Any, |l| l.evaluate_to_specific_primitive_type()),
-            Self::ParenthesizedExpression(par) => {
-                par.expression.evaluate_to_specific_primitive_type()
-            }
-            Self::BigintLiteral(b) => {
-                PrimitiveType::BigInt(BigIntConstraint::Value(b.value.clone()))
-            }
+            Self::ParenthesizedExpression(par) => par.expression.evaluate_to_specific_primitive_type(),
+            Self::BigintLiteral(b) => PrimitiveType::BigInt(BigIntConstraint::Value(b.value.clone())),
             Self::ConditionalExpression(cond) => {
                 if let PrimitiveType::Boolean(BooleanConstraint::Value(v)) =
-                    cond.test.evaluate_to_specific_primitive_type().narrow_as_bool_type()
+                    cond.test.evaluate_to_specific_primitive_type().ecma_to_boolean()
                 {
-                    if v {
-                        return cond.consequent.evaluate_to_specific_primitive_type();
+                    return if v {
+                        cond.consequent.evaluate_to_specific_primitive_type()
                     } else {
-                        return cond.alternate.evaluate_to_specific_primitive_type();
+                        cond.alternate.evaluate_to_specific_primitive_type()
                     }
                 }
-                match cond.consequent.evaluate_to_specific_primitive_type() {
-                    PrimitiveType::Any => PrimitiveType::Any,
-                    consequent_type => match cond.alternate.evaluate_to_specific_primitive_type() {
-                        PrimitiveType::Any => PrimitiveType::Any,
-                        alternate_type => {
-                            let wide_type = consequent_type.widen(&alternate_type);
-                            match wide_type {
-                                SimpleType::Unknown => PrimitiveType::Any,
-                                SimpleType::PrimitiveType(t) => t,
-                            }
-                        }
-                    },
-                }
+                cond.consequent.evaluate_to_specific_primitive_type().widen(&cond.alternate.evaluate_to_specific_primitive_type())
             }
             Self::LogicalExpression(cond) => {
                 match cond.left.evaluate_to_specific_primitive_type() {
@@ -476,15 +442,10 @@ impl<'a> Expression<'a> {
                     left_type => match cond.left.evaluate_to_specific_primitive_type() {
                         PrimitiveType::Any => PrimitiveType::Any,
                         right_type => {
-                            if cond.operator == LogicalOperator::Coalesce
-                                && matches!(PrimitiveType::Undefined, _left_type)
-                            {
-                                return right_type;
-                            }
-                            let wide_type = left_type.widen(&right_type);
-                            match wide_type {
-                                SimpleType::Unknown => PrimitiveType::Any,
-                                SimpleType::PrimitiveType(t) => t,
+                            match cond.operator {
+                                LogicalOperator::Coalesce => left_type.ecma_nullish_coalescing_operator(right_type),
+                                LogicalOperator::And => left_type.ecma_logical_and_operator(right_type),
+                                LogicalOperator::Or => left_type.ecma_logical_or_operator(right_type)
                             }
                         }
                     },
@@ -493,13 +454,9 @@ impl<'a> Expression<'a> {
             Self::NullLiteral(_) => PrimitiveType::Null,
             Self::NumberLiteral(v) => PrimitiveType::Number(NumberConstraint::Value(v.value)),
             Self::BooleanLiteral(b) => PrimitiveType::Boolean(BooleanConstraint::Value(b.value)),
-            Self::StringLiteral(b) => {
-                PrimitiveType::String(StringConstraint::Value(b.value.clone()))
-            }
+            Self::StringLiteral(b) => PrimitiveType::String(StringConstraint::Value(b.value.clone())),
             Self::TemplateLiteral(_t) => PrimitiveType::String(StringConstraint::None),
-            Self::ArrowExpression(_) | Self::ClassExpression(_) | Self::FunctionExpression(_) => {
-                PrimitiveType::Function
-            }
+            Self::ArrowExpression(_) | Self::ClassExpression(_) | Self::FunctionExpression(_) => PrimitiveType::Function,
             Self::ObjectExpression(_) | Self::ArrayExpression(_) => PrimitiveType::Object,
             _ => PrimitiveType::Any,
         }
@@ -668,17 +625,28 @@ impl PrimitiveTypeComparison {
     }
 }
 
+
+enum ToPrimitiveHint {
+    Default,
+    Number,
+    String
+}
+
 impl PrimitiveType {
-    pub fn evaluate_typeof_type(&self) -> Self {
+    /// https://tc39.es/ecma262/#sec-typeof-operator
+    pub fn ecma_typeof_operator(&self) -> Self {
         match self {
-            PrimitiveType::Null | PrimitiveType::Object => {
-                PrimitiveType::String(StringConstraint::Value(Atom::from("object")))
-            }
             PrimitiveType::Undefined => {
                 PrimitiveType::String(StringConstraint::Value(Atom::from("undefined")))
             }
+            PrimitiveType::Null | PrimitiveType::Object => {
+                PrimitiveType::String(StringConstraint::Value(Atom::from("object")))
+            }
             PrimitiveType::String(_) => {
                 PrimitiveType::String(StringConstraint::Value(Atom::from("string")))
+            }
+            PrimitiveType::Symbol => {
+                PrimitiveType::String(StringConstraint::Value(Atom::from("symbol")))
             }
             PrimitiveType::Boolean(_) => {
                 PrimitiveType::String(StringConstraint::Value(Atom::from("boolean")))
@@ -686,14 +654,11 @@ impl PrimitiveType {
             PrimitiveType::Number(_) => {
                 PrimitiveType::String(StringConstraint::Value(Atom::from("number")))
             }
-            PrimitiveType::Symbol => {
-                PrimitiveType::String(StringConstraint::Value(Atom::from("symbol")))
+            PrimitiveType::BigInt(_) => {
+                PrimitiveType::String(StringConstraint::Value(Atom::from("bigint")))
             }
             PrimitiveType::Function => {
                 PrimitiveType::String(StringConstraint::Value(Atom::from("function")))
-            }
-            PrimitiveType::BigInt(_) => {
-                PrimitiveType::String(StringConstraint::Value(Atom::from("bigint")))
             }
             PrimitiveType::Never | PrimitiveType::Any => {
                 PrimitiveType::String(StringConstraint::None)
@@ -701,22 +666,65 @@ impl PrimitiveType {
         }
     }
 
-    pub fn logical_not(&self) -> Self {
-        match self.narrow_as_bool_type() {
+
+    /// https://tc39.es/ecma262/#sec-logical-not-operator
+    pub fn ecma_logical_not_operator(&self) -> Self {
+        match self.ecma_to_boolean() {
             PrimitiveType::Boolean(c) => PrimitiveType::Boolean(c.negate()),
             _ => PrimitiveType::Boolean(BooleanConstraint::None),
         }
     }
-    pub fn unary_negation(&self) -> Self {
-        match self.narrow_as_number_type() {
+
+    // https://tc39.es/ecma262/#sec-binary-logical-operators-runtime-semantics-evaluation
+    fn ecma_logical_and_operator(&self, other: Self) -> Self {
+        match self.ecma_to_boolean() {
+            PrimitiveType::Boolean(BooleanConstraint::Value(lval)) => {
+                if lval {
+                    other
+                } else {
+                    self.clone()
+                }
+            },
+            _ => self.widen(&other),
+        }
+    }
+
+    // https://tc39.es/ecma262/#sec-binary-logical-operators-runtime-semantics-evaluation
+    fn ecma_logical_or_operator(&self, other: Self) -> Self {
+        match self.ecma_to_boolean() {
+            PrimitiveType::Boolean(BooleanConstraint::Value(lval)) => {
+                if lval {
+                    self.clone()
+                } else {
+                    other
+                }
+            },
+            _ => self.widen(&other),
+        }
+    }
+
+
+    // https://tc39.es/ecma262/#sec-binary-logical-operators-runtime-semantics-evaluation
+    fn ecma_nullish_coalescing_operator(&self, other: Self) -> Self {
+        match self {
+            PrimitiveType::Null | PrimitiveType::Undefined => other,
+            _ => self.widen(&other),
+        }
+    }
+
+    /// https://tc39.es/ecma262/#sec-unary-minus-operator
+    pub fn ecma_unary_minus_operator(&self) -> Self {
+        match self.ecma_to_numeric() {
             PrimitiveType::BigInt(c) => PrimitiveType::BigInt(c.negate()),
             PrimitiveType::Number(c) => PrimitiveType::Number(c.negate()),
             _ => PrimitiveType::Number(NumberConstraint::None),
         }
     }
-    pub fn subtraction(&self, other: PrimitiveType) -> PrimitiveType {
+
+    /// https://tc39.es/ecma262/#sec-subtraction-operator-minus
+    pub fn ecma_subtraction_operator(&self, other: PrimitiveType) -> PrimitiveType {
         // This is the vastly more common case
-        match (self.narrow_as_number_type(), other.narrow_as_number_type()) {
+        match (self.ecma_to_numeric(), other.ecma_to_numeric()) {
             (
                 PrimitiveType::Number(NumberConstraint::Value(left)),
                 PrimitiveType::Number(NumberConstraint::Value(right)),
@@ -733,49 +741,133 @@ impl PrimitiveType {
             }
         }
     }
-    pub fn exponential(&self, other: PrimitiveType) -> PrimitiveType {
-        // This is the vastly more common case
-        match (self.narrow_as_number_type(), other.narrow_as_number_type()) {
-            (
-                PrimitiveType::Number(NumberConstraint::Value(left)),
-                PrimitiveType::Number(NumberConstraint::Value(right)),
-            ) => PrimitiveType::Number(NumberConstraint::Value(left.pow(right))),
-            (_left, _right) => {
-                if let (
-                    PrimitiveType::BigInt(BigIntConstraint::Value(left)),
-                    PrimitiveType::BigInt(BigIntConstraint::Value(right)),
-                ) = (self, other)
-                {
-                    return PrimitiveType::BigInt(BigIntConstraint::Value(
-                        left.pow(right.try_into().expect("bigint too big to pow")),
-                    ));
+
+    /// https://tc39.es/ecma262/#sec-exp-operator
+    pub fn ecma_numeric_exponentiate(&self, exponent: PrimitiveType) -> PrimitiveType {
+        match (self, exponent) {
+            (Self::BigInt(_), Self::Number(_)) | (Self::Number(_), Self::BigInt(_)) => { 
+                return Self::Never
+            }
+            (Self::Number(NumberConstraint::None), Self::Number(_)) | (Self::Number(_), Self::Number(NumberConstraint::None)) => {
+                return Self::Number(NumberConstraint::None)
+            }
+            // https://tc39.es/ecma262/#sec-numeric-types-bigint-exponentiate
+            (Self::BigInt(BigIntConstraint::None), Self::BigInt(BigIntConstraint::None)) | (Self::BigInt(_), Self::BigInt(BigIntConstraint::None)) => {
+                return Self::BigInt(BigIntConstraint::None)
+            }
+            (Self::BigInt(BigIntConstraint::None), Self::BigInt(BigIntConstraint::Value(exact_exponent))) => {
+                if exact_exponent < BigInt::zero() {
+                    return Self::Never
                 }
-                PrimitiveType::Any
+                return Self::BigInt(BigIntConstraint::None)
+            }
+            (Self::BigInt(BigIntConstraint::Value(exact_base)), Self::BigInt(BigIntConstraint::Value(exact_exponent))) => {
+                let value = if exact_base.is_zero() && exact_exponent.is_zero() {
+                    BigInt::one()
+                } else {
+                    if let Some(pow_exponent) = exact_exponent.to_u32() {
+                        exact_base.pow(pow_exponent)
+                    } else {
+                        return Self::BigInt(BigIntConstraint::None)
+                    }
+                };
+                return Self::BigInt(BigIntConstraint::Value(value))
+            }
+            (_, exponent) => {
+                // https://tc39.es/ecma262/#sec-numeric-types-number-exponentiate
+                if let Self::Number(NumberConstraint::Value(exact_exponent)) = exponent {
+                    if exact_exponent.is_nan() {
+                        return exponent
+                    } else if exact_exponent.is_zero() {
+                        return Self::Number(NumberConstraint::Value(1.0))
+                    } else if exact_exponent.is_infinite() {
+                        if let Self::Number(NumberConstraint::Value(exact_base)) = self {
+                            let abs_base = exact_base.abs();
+                            if exact_exponent.is_sign_positive() {
+                                let value = if abs_base > 1.0 {
+                                    f64::INFINITY
+                                } else if abs_base == 0.0 {
+                                    f64::NAN
+                                } else if abs_base < 1.0 {
+                                    0.0
+                                } else {
+                                    unreachable!("Should not happen")
+                                };
+                                return Self::Number(NumberConstraint::Value(value))
+                            } else {
+                                let value = if abs_base > 1.0 {
+                                    0.0
+                                } else if abs_base == 0.0 {
+                                    f64::NAN
+                                } else if abs_base < 1.0 {
+                                    f64::INFINITY
+                                } else {
+                                    unreachable!("Should not happen")
+                                };
+                                return Self::Number(NumberConstraint::Value(value))
+                            }
+                        }
+                        return Self::Number(NumberConstraint::None)
+                    }
+                }
+                if let Self::Number(NumberConstraint::Value(exact_base)) = self {
+                    if matches!(exponent, PrimitiveType::BigInt(_)) {
+                        return Self::Never
+                    }
+                    if let Self::Number(NumberConstraint::Value(exact_exponent)) = exponent {
+                        if exact_base.is_infinite() {
+                            if exact_base.is_sign_positive() {
+                                if exact_exponent > 0.0 {
+                                    return self.clone()
+                                } else {
+                                    return Self::Number(NumberConstraint::Value(0.0))
+                                }
+                            } else {
+                                if exact_exponent > 0.0 {
+                                    return if exact_exponent.rem(2.0) == 1.0 {
+                                        Self::Number(NumberConstraint::Value(0.0))
+                                    } else {
+                                        Self::Number(NumberConstraint::Value(-0.0))
+                                    }
+                                } else {
+                                    return if exact_exponent.rem(2.0) == 1.0 {
+                                        self.clone()
+                                    } else {
+                                        Self::Number(NumberConstraint::Value(f64::INFINITY))
+                                    }
+                                }
+                            }
+                        }
+                        if exact_base < &-0.0 && exact_exponent.fract() != 0.0 {
+                            return Self::Number(NumberConstraint::Value(f64::NAN))
+                        }
+                    } else {
+                        return Self::Number(NumberConstraint::None)
+                    }
+                }
             }
         }
+
+        // could be bigint or number
+        return PrimitiveType::Any
     }
-    pub fn widen(&self, other: &Self) -> SimpleType {
+    pub fn widen(&self, other: &Self) -> PrimitiveType {
         match self.compare(other) {
-            PrimitiveTypeComparison::Unknown | PrimitiveTypeComparison::NeverSameType => {
-                SimpleType::Unknown
-            }
-            PrimitiveTypeComparison::AlwaysSameTypeAndValue => {
-                SimpleType::PrimitiveType(self.clone())
-            }
+            PrimitiveTypeComparison::Unknown | PrimitiveTypeComparison::NeverSameType => PrimitiveType::Any,
+            PrimitiveTypeComparison::AlwaysSameTypeAndValue => *self,
             PrimitiveTypeComparison::AlwaysSameType
             | PrimitiveTypeComparison::AlwaysSameTypeNeverSameValue => match self {
-                Self::BigInt(_) => SimpleType::PrimitiveType(Self::BigInt(BigIntConstraint::None)),
-                Self::Boolean(_) => {
-                    SimpleType::PrimitiveType(Self::Boolean(BooleanConstraint::None))
-                }
-                Self::Function => SimpleType::PrimitiveType(Self::Function),
-                Self::Null => SimpleType::PrimitiveType(Self::Null),
-                Self::Number(_) => SimpleType::PrimitiveType(Self::Number(NumberConstraint::None)),
-                Self::Object => SimpleType::PrimitiveType(Self::Object),
-                Self::String(_) => SimpleType::PrimitiveType(Self::String(StringConstraint::None)),
-                Self::Symbol => SimpleType::PrimitiveType(Self::Symbol),
-                Self::Undefined => SimpleType::PrimitiveType(Self::Undefined),
-                Self::Never | PrimitiveType::Any => SimpleType::Unknown,
+                Self::BigInt(_) => Self::BigInt(BigIntConstraint::None),
+                Self::Boolean(_) => Self::Boolean(BooleanConstraint::None),
+                Self::Function => Self::Function,
+                Self::Null => Self::Null,
+                Self::Number(_) => Self::Number(NumberConstraint::None),
+                Self::Object => Self::Object,
+                Self::String(_) => Self::String(StringConstraint::None),
+                Self::Symbol => Self::Symbol,
+                Self::Undefined => Self::Undefined,
+                Self::Never => Self::Never,
+                Self::Any => Self::Any 
             },
         }
     }
@@ -834,21 +926,47 @@ impl PrimitiveType {
         }
     }
 
-    /// without using any OOP hooks like [Symbol.toPrimitive] narrow
-    fn narrow_as_bool_type(&self) -> Self {
+    /// https://tc39.es/ecma262/#sec-toprimitive
+    fn ecma_to_primitive(&self, _hint: ToPrimitiveHint) -> Self {
         match self {
-            Self::BigInt(BigIntConstraint::Value(v)) => {
-                if v.is_zero() {
-                    Self::Boolean(BooleanConstraint::Value(false))
-                } else {
-                    Self::Boolean(BooleanConstraint::Value(true))
-                }
-            }
+            PrimitiveType::BigInt(_) |
+            PrimitiveType::Boolean(_) |
+            PrimitiveType::Never |
+            PrimitiveType::Null |
+            PrimitiveType::Number(_) |
+            PrimitiveType::String(_) |
+            PrimitiveType::Symbol |
+            PrimitiveType::Undefined => self.clone(),
+            PrimitiveType::Any |
+            PrimitiveType::Function |
+            PrimitiveType::Object => PrimitiveType::Any
+        }
+    }
+
+    /// https://tc39.es/ecma262/#sec-tonumeric
+    fn ecma_to_numeric(&self) -> Self {
+        let primitive = self.ecma_to_primitive(ToPrimitiveHint::Number);
+        if matches!(primitive, PrimitiveType::BigInt(_)) {
+            return primitive
+        }
+        primitive.ecma_to_number()
+    }
+
+    /// https://tc39.es/ecma262/#sec-toboolean
+    fn ecma_to_boolean(&self) -> Self {
+        match self {
             Self::Boolean(BooleanConstraint::Value(v)) => {
                 Self::Boolean(BooleanConstraint::Value(*v))
             }
             Self::Null | Self::Undefined => Self::Boolean(BooleanConstraint::Value(false)),
             Self::Number(NumberConstraint::Value(v)) => {
+                if v.is_zero() || v.is_nan() {
+                    Self::Boolean(BooleanConstraint::Value(false))
+                } else {
+                    Self::Boolean(BooleanConstraint::Value(true))
+                }
+            }
+            Self::BigInt(BigIntConstraint::Value(v)) => {
                 if v.is_zero() {
                     Self::Boolean(BooleanConstraint::Value(false))
                 } else {
@@ -869,38 +987,42 @@ impl PrimitiveType {
         }
     }
 
-    fn narrow_as_number_type(&self) -> Self {
+    /// https://tc39.es/ecma262/#sec-tonumber
+    fn ecma_to_number(&self) -> Self {
         match self {
-            Self::BigInt(BigIntConstraint::Value(_)) | Self::Symbol => Self::Never,
+            Self::Number(_) => self.clone(),
+            Self::Symbol | Self::BigInt(BigIntConstraint::Value(_)) => Self::Never,
+            Self::Undefined => Self::Number(NumberConstraint::Value(f64::NAN)),
+            Self::Null => Self::Number(NumberConstraint::Value(0.0)),
             Self::Boolean(BooleanConstraint::Value(v)) => {
                 Self::Number(NumberConstraint::Value(if *v { 1.0 } else { 0.0 }))
             }
-            Self::Null | Self::Undefined => Self::Number(NumberConstraint::Value(0.0)),
-            Self::Number(_) => self.clone(),
-            Self::String(StringConstraint::Value(v)) => {
-                if v.is_empty() {
-                    Self::Number(NumberConstraint::Value(0.0))
-                } else {
-                    Self::Number(NumberConstraint::None)
-                }
-            }
+            Self::String(StringConstraint::Value(v)) => self.ecma_string_to_number(v),
             _ => Self::Number(NumberConstraint::None),
         }
     }
 
-    /// this should only happen in very specific scenarios where
-    /// number has been eliminated from the possible comparisons
-    fn narrow_as_bigint_type(&self) -> Self {
-        match self {
-            Self::Number(NumberConstraint::Value(_)) | Self::Symbol => Self::Never,
+    /// https://tc39.es/ecma262/#sec-stringtonumber
+    /// TODO: parse known values
+    fn ecma_string_to_number(&self, v: &Atom) -> Self {
+        if v.is_empty() {
+            Self::Number(NumberConstraint::Value(0.0))
+        } else {
+            Self::Number(NumberConstraint::None)
+        }
+    }
+
+    /// https://tc39.es/ecma262/#sec-tobigint
+    fn ecma_to_bigint(&self) -> Self {
+        match self.ecma_to_primitive(ToPrimitiveHint::Number) {
+            Self::Boolean(BooleanConstraint::None) | Self::String(StringConstraint::None) | Self::Any => Self::BigInt(BigIntConstraint::None),
             Self::Boolean(BooleanConstraint::Value(v)) => {
-                Self::BigInt(BigIntConstraint::Value(if *v {
+                Self::BigInt(BigIntConstraint::Value(if v {
                     BigInt::one()
                 } else {
                     BigInt::zero()
                 }))
             }
-            Self::Null | Self::Undefined => Self::BigInt(BigIntConstraint::Value(BigInt::zero())),
             Self::BigInt(_) => self.clone(),
             Self::String(StringConstraint::Value(v)) => {
                 if v.is_empty() {
@@ -909,12 +1031,31 @@ impl PrimitiveType {
                     Self::BigInt(BigIntConstraint::None)
                 }
             }
-            _ => Self::BigInt(BigIntConstraint::None),
+            Self::Null | Self::Undefined | Self::Number(_) | Self::Symbol | Self::Function | Self::Object | Self::Never => Self::Never,
         }
     }
 
-    fn narrow_as_string_type(&self) -> Self {
+    /// https://tc39.es/ecma262/#sec-stringtobigint
+    // Note, due to returning undefined in errors it falls back to Any
+    fn ecma_string_to_bigint(&self) -> Self {
         match self {
+            Self::String(StringConstraint::Value(v)) => {
+                if v.is_empty() {
+                    Self::BigInt(BigIntConstraint::Value(BigInt::from(0)))
+                } else {
+                    Self::Any
+                }
+            }
+            Self::String(_) => {
+                Self::Any
+            }
+            _ => Self::Never
+        }
+    }
+
+    fn ecma_to_string(&self) -> Self {
+        match self {
+            Self::Never => Self::Never,
             Self::BigInt(BigIntConstraint::Value(v)) => {
                 Self::String(StringConstraint::Value(Atom::from(v.to_string())))
             }
@@ -925,28 +1066,102 @@ impl PrimitiveType {
             Self::Number(NumberConstraint::Value(v)) => {
                 Self::String(StringConstraint::Value(Atom::from(v.to_string())))
             }
-            Self::String(StringConstraint::Value(_)) => self.clone(),
+            Self::String(StringConstraint::Value(_)) => *self,
             Self::Symbol => Self::Never,
             Self::Undefined => Self::String(StringConstraint::Value(Atom::from("undefined"))),
             _ => Self::String(StringConstraint::None),
         }
     }
 
-    fn bitwise_not(&self) -> PrimitiveType {
-        match self.narrow_as_number_type() {
-            PrimitiveType::Number(NumberConstraint::Value(v)) => {
+    /// https://tc39.es/ecma262/#sec-islooselyequal
+    fn ecma_is_loosely_equal(&self, other: Self) -> Self {
+        match (self, other) {
+            (PrimitiveType::Never, _)
+            | (_, PrimitiveType::Never) => {
+                PrimitiveType::Never
+            },
+            //#region same type
+            (PrimitiveType::Null, PrimitiveType::Null)
+            | (PrimitiveType::Undefined, PrimitiveType::Undefined)
+            | (PrimitiveType::Null, PrimitiveType::Undefined)
+            | (PrimitiveType::Undefined, PrimitiveType::Null) => {
+                PrimitiveType::Boolean(BooleanConstraint::Value(true))
+            }
+            (PrimitiveType::BigInt(BigIntConstraint::Value(left)), PrimitiveType::BigInt(BigIntConstraint::Value(right))) => {
+                PrimitiveType::Boolean(BooleanConstraint::Value(*left == right))
+            }
+            (PrimitiveType::Boolean(BooleanConstraint::Value(left)), PrimitiveType::Boolean(BooleanConstraint::Value(right))) => {
+                PrimitiveType::Boolean(BooleanConstraint::Value(*left == right))
+            }
+            (PrimitiveType::Number(NumberConstraint::Value(left)), PrimitiveType::Number(NumberConstraint::Value(right))) => {
+                PrimitiveType::Boolean(BooleanConstraint::Value(*left == right))
+            }
+            (PrimitiveType::String(StringConstraint::Value(left)), PrimitiveType::String(StringConstraint::Value(right))) => {
+                PrimitiveType::Boolean(BooleanConstraint::Value(*left == right))
+            }
+            //#endregion same type
+            (PrimitiveType::Number(left_c), PrimitiveType::String(right_c)) => {
+                PrimitiveType::Number(*left_c).ecma_is_loosely_equal(PrimitiveType::String(right_c).ecma_to_number())
+            }
+            (PrimitiveType::String(left_c), PrimitiveType::Number(right_c)) => {
+                PrimitiveType::String(*left_c).ecma_to_number().ecma_is_loosely_equal(PrimitiveType::Number(right_c))
+            }
+            (PrimitiveType::BigInt(left_c), PrimitiveType::String(right_c)) => {
+                let n = PrimitiveType::String(right_c).ecma_string_to_bigint();
+                if matches!(n, PrimitiveType::Undefined) {
+                    PrimitiveType::Boolean(BooleanConstraint::Value(true))
+                } else {
+                    PrimitiveType::BigInt(*left_c).ecma_is_loosely_equal(n)
+                }
+            }
+            (PrimitiveType::String(left_c), PrimitiveType::BigInt(right_c)) => {
+                PrimitiveType::BigInt(right_c).ecma_is_loosely_equal(PrimitiveType::String(*left_c))
+            }
+            (PrimitiveType::Boolean(left_c), right) => PrimitiveType::Boolean(*left_c).ecma_to_number().ecma_is_loosely_equal(right),
+            (left, PrimitiveType::Boolean(right_c)) => left.ecma_is_loosely_equal(PrimitiveType::Boolean(right_c).ecma_to_number()),
+            (PrimitiveType::Number(NumberConstraint::Value(left)), PrimitiveType::BigInt(BigIntConstraint::Value(right))) => {
+                if !left.is_finite() {
+                    return PrimitiveType::Boolean(BooleanConstraint::Value(false))
+                }
+                if let Some(right_f) = right.to_f64() {
+                    PrimitiveType::Boolean(BooleanConstraint::Value(*left == right_f))
+                } else {
+                    PrimitiveType::Boolean(BooleanConstraint::None)
+                }
+            }
+            (PrimitiveType::BigInt(BigIntConstraint::Value(left)), PrimitiveType::Number(NumberConstraint::Value(right))) => {
+                if !right.is_finite() {
+                    return PrimitiveType::Boolean(BooleanConstraint::Value(false))
+                }
+                if let Some(left_f) = left.to_f64() {
+                    PrimitiveType::Boolean(BooleanConstraint::Value(left_f == right))
+                } else {
+                    PrimitiveType::Boolean(BooleanConstraint::None)
+                }
+            }
+            _ => {
+                // TODO: Objects
+                PrimitiveType::Boolean(BooleanConstraint::None)
+            }
+        }
+    }
+
+    /// https://tc39.es/ecma262/#sec-bitwise-not-operator
+    fn ecma_bitwise_not_operator(&self) -> Self {
+        match self.ecma_to_numeric() {
+            Self::Number(NumberConstraint::Value(v)) => {
                 let as_i32 = num_traits::ToPrimitive::to_i32(&v);
                 let modified = (!as_i32.unwrap_or(i32::MAX)).to_f64();
                 modified.map_or_else(
-                    || PrimitiveType::Number(NumberConstraint::None),
-                    |v| PrimitiveType::Number(NumberConstraint::Value(v)),
+                    || Self::Number(NumberConstraint::None),
+                    |v| Self::Number(NumberConstraint::Value(v)),
                 )
             }
-            PrimitiveType::BigInt(BigIntConstraint::Value(v)) => {
+            Self::BigInt(BigIntConstraint::Value(v)) => {
                 let modified = !v;
-                PrimitiveType::BigInt(BigIntConstraint::Value(modified))
+                Self::BigInt(BigIntConstraint::Value(modified))
             }
-            _ => PrimitiveType::Number(NumberConstraint::None),
+            _ => Self::Number(NumberConstraint::None),
         }
     }
 }
